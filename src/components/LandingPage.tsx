@@ -2,7 +2,15 @@ import { Link } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Bot, Leaf, ShoppingBag, GraduationCap, Users, Shield } from 'lucide-react';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+
 export default function LandingPage() {
+  const scrollToFeatures = () => {
+    const featuresSection = document.getElementById('features');
+    if (featuresSection) {
+      featuresSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 via-purple-50 to-white">
       {/* Navigation */}
@@ -45,7 +53,12 @@ export default function LandingPage() {
                   Get Started
                 </Button>
               </Link>
-              <Button size="lg" variant="outline" className="rounded-full border-2 border-purple-300 text-purple-700 hover:bg-purple-50">
+              <Button 
+                size="lg" 
+                variant="outline" 
+                className="rounded-full border-2 border-purple-300 text-purple-700 hover:bg-purple-50"
+                onClick={scrollToFeatures}
+              >
                 Learn More
               </Button>
             </div>
@@ -74,7 +87,7 @@ export default function LandingPage() {
       </section>
 
       {/* Features Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      <section id="features" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div className="text-center mb-16">
           <h2 className="text-4xl text-gray-900 mb-4">Complete Agricultural Ecosystem</h2>
           <p className="text-xl text-gray-600">Integrated platform for farmers, processors, and traders</p>
