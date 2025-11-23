@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import DashboardLayout from './DashboardLayout';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -10,6 +10,7 @@ import {
   MessageCircle, TrendingUp, Clock, Users
 } from 'lucide-react';
 import { useAuth } from '../App';
+import { getUsers } from '../utils/auth';
 
 function getTimeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
@@ -60,28 +61,48 @@ export default function Forum() {
   const [newTags, setNewTags] = useState('');
   const [discussions, setDiscussions] = useState<Discussion[]>([]);
 
+  // Get valid users to filter discussions
+  const validUsers = useMemo(() => getUsers(), []);
+  const validUserNames = useMemo(() => {
+    const names = new Set(validUsers.map(u => u.name));
+    // Include admin
+    names.add('Administrator');
+    return names;
+  }, [validUsers]);
+  const activeMemberCount = validUsers.length + 1; // +1 for admin
+
   useEffect(() => {
     const saved = localStorage.getItem(FORUM_STORAGE_KEY);
+    let parsed: Discussion[] = [];
+    
     if (saved) {
       try {
-        const parsed: Discussion[] = JSON.parse(saved);
-        setDiscussions(parsed);
+        parsed = JSON.parse(saved);
       } catch {
-        setDiscussions([]);
+        parsed = [];
       }
-    } else {
-      const seed: Discussion[] = [
-        { id: 'd1', title: 'Best practices for cleaning robot scheduling?', authorName: 'Dimas Dzikra', authorRole: 'Farmer', timestamp: new Date().toISOString(), category: 'Robot Management', likes: 0, likedUsers: [], content: "I'm trying to optimize my cleaning schedule for multiple barns. What's the best approach for...", tags: ['scheduling', 'optimization', 'robot'], isHot: true, comments: [] },
-        { id: 'd2', title: 'Compost pricing strategies for small farms', authorName: 'Hadyani Alya', authorRole: 'Compost Processor', timestamp: new Date().toISOString(), category: 'Business', likes: 0, likedUsers: [], content: "I've been producing quality compost but struggling with pricing. What are your recommendations...", tags: ['compost', 'pricing', 'business'], comments: [] },
-      ];
-      setDiscussions(seed);
-      localStorage.setItem(FORUM_STORAGE_KEY, JSON.stringify(seed));
     }
+
+    // Filter out discussions from invalid users (Dimas Dzikra, Hadyani Alya, etc.)
+    const validDiscussions = parsed.filter(d => {
+      return validUserNames.has(d.authorName);
+    });
+
+    // If no valid discussions and no saved data, start with empty array
+    if (validDiscussions.length !== parsed.length) {
+      // Update localStorage to remove invalid discussions
+      localStorage.setItem(FORUM_STORAGE_KEY, JSON.stringify(validDiscussions));
+    }
+
+    setDiscussions(validDiscussions);
+
     const onStorage = (e: StorageEvent) => {
       if (e.key === FORUM_STORAGE_KEY && e.newValue) {
         try {
           const parsed: Discussion[] = JSON.parse(e.newValue);
-          setDiscussions(parsed);
+          // Filter invalid users when loading from storage
+          const valid = parsed.filter(d => validUserNames.has(d.authorName));
+          setDiscussions(valid);
         } catch {
           // ignore
         }
@@ -89,10 +110,13 @@ export default function Forum() {
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, []);
+  }, [validUserNames]);
 
   const persist = (list: Discussion[]) => {
-    localStorage.setItem(FORUM_STORAGE_KEY, JSON.stringify(list));
+    // Only persist discussions from valid users
+    const valid = list.filter(d => validUserNames.has(d.authorName));
+    localStorage.setItem(FORUM_STORAGE_KEY, JSON.stringify(valid));
+    setDiscussions(valid);
   };
   const categories = ['All Topics', 'Trending', 'Questions', 'General', 'Technical'];
   const filteredAll = discussions.filter(d => d.title.toLowerCase().includes(search.toLowerCase()) || d.category.toLowerCase().includes(search.toLowerCase()) || d.authorName.toLowerCase().includes(search.toLowerCase()));
@@ -195,7 +219,7 @@ export default function Forum() {
             </div>
           </Card>
           <Card className="p-4 border-purple-200 text-center">
-            <div className="text-2xl text-gray-900 mb-1">10</div>
+            <div className="text-2xl text-gray-900 mb-1">{activeMemberCount}</div>
             <div className="text-sm text-gray-600 flex items-center justify-center">
               <Users className="w-4 h-4 mr-1" />
               Active Members

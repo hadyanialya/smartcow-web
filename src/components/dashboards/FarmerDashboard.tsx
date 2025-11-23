@@ -19,6 +19,9 @@ import { XAxis, YAxis, CartesianGrid, Area, AreaChart, Tooltip } from 'recharts'
 
 const WASTE_DATA_KEY = 'smartcow_farmer_waste_data';
 const COLLECTION_LOG_KEY = 'smartcow_farmer_collection_log';
+const ROBOT_STATUS_KEY = 'smartcow_robot_status';
+const ROBOT_LOGS_KEY = 'smartcow_robot_logs';
+const ROBOT_ACTIVITY_KEY = 'smartcow_robot_activity';
 
 interface WasteCollectionLog {
   id: string;
@@ -92,6 +95,37 @@ export default function FarmerDashboard() {
         setCollectionLog(parsed);
       } catch {}
     }
+
+    // Check if robot should be offline (no activity for 5 minutes)
+    const checkRobotStatus = () => {
+      try {
+        const status = localStorage.getItem(ROBOT_STATUS_KEY);
+        if (status) {
+          const parsed = JSON.parse(status);
+          if (parsed.online && parsed.lastActivity) {
+            const lastActivity = new Date(parsed.lastActivity);
+            const now = new Date();
+            const diffMinutes = (now.getTime() - lastActivity.getTime()) / 60000;
+            // If no activity for 5 minutes, set robot to idle/offline
+            if (diffMinutes > 5) {
+              const updatedStatus = {
+                ...parsed,
+                online: true, // Keep online but change state
+                state: 'idle',
+                battery: Math.max(20, parsed.battery - 1), // Battery decreases slowly
+              };
+              localStorage.setItem(ROBOT_STATUS_KEY, JSON.stringify(updatedStatus));
+            }
+          }
+        }
+      } catch {}
+    };
+    
+    // Check robot status every minute
+    const statusInterval = setInterval(checkRobotStatus, 60000);
+    checkRobotStatus(); // Check immediately
+    
+    return () => clearInterval(statusInterval);
   }, []);
 
   // Reset daily total at midnight
@@ -139,6 +173,45 @@ export default function FarmerDashboard() {
       wasteCollected: collectionAmount,
       timestamp: now.toISOString(),
     };
+
+    // Update robot status to online when collection happens
+    try {
+      const currentStatus = localStorage.getItem(ROBOT_STATUS_KEY);
+      const status = currentStatus ? JSON.parse(currentStatus) : { online: false, battery: 0, state: 'offline' };
+      const newBattery = Math.max(20, Math.min(100, status.battery || 100)); // Keep battery between 20-100%
+      const updatedStatus = {
+        online: true,
+        battery: newBattery,
+        state: 'collecting',
+        lastActivity: now.toISOString(),
+      };
+      localStorage.setItem(ROBOT_STATUS_KEY, JSON.stringify(updatedStatus));
+      
+      // Add robot log
+      const logs = JSON.parse(localStorage.getItem(ROBOT_LOGS_KEY) || '[]');
+      logs.unshift({
+        type: 'success',
+        message: `Collected ${collectionAmount.toFixed(2)} kg of waste`,
+        time: now.toISOString(),
+      });
+      // Keep only last 50 logs
+      if (logs.length > 50) logs.pop();
+      localStorage.setItem(ROBOT_LOGS_KEY, JSON.stringify(logs));
+      
+      // Add robot activity
+      const activities = JSON.parse(localStorage.getItem(ROBOT_ACTIVITY_KEY) || '[]');
+      activities.unshift({
+        action: 'collect',
+        status: 'completed',
+        taskName: `Waste Collection (${collectionAmount.toFixed(2)} kg)`,
+        time: now.toISOString(),
+      });
+      // Keep only last 50 activities
+      if (activities.length > 50) activities.pop();
+      localStorage.setItem(ROBOT_ACTIVITY_KEY, JSON.stringify(activities));
+    } catch (e) {
+      console.error('Error updating robot status:', e);
+    }
 
     // Update waste data
     setWasteData(prev => {
@@ -551,11 +624,11 @@ export default function FarmerDashboard() {
           </Card>
         </div>
 
-      {/* Per-Minute Chart Section */}
+      {/* Per-10-Second Chart Section */}
       <Card className="p-6 border-purple-200">
         <div className="mb-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-1">Waste Collection per Minute</h3>
-          <p className="text-sm text-gray-600">Real-time tracking of waste collected per minute</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">Waste Collection per 10 Seconds</h3>
+          <p className="text-sm text-gray-600">Real-time tracking of waste collected per 10 seconds</p>
                   </div>
         {renderMinuteChart()}
                 </Card>

@@ -326,11 +326,10 @@ export default function Chat() {
                   <div key={msg.id} className={`flex ${msg.fromId === currentUserId ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-md ${msg.fromId === currentUserId ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white' : 'bg-gray-100 text-gray-900'} rounded-2xl px-4 py-2`}>
                       <p className="text-sm">
-                        {msg.fromRole === 'admin' && msg.fromId !== currentUserId ? 'Admin: ' : ''}
                         {msg.text}
                       </p>
                       <span className={`text-[10px] mt-1 block ${msg.fromId === currentUserId ? 'text-blue-100' : 'text-gray-500'}`}>
-                        {new Date(msg.timestamp).toLocaleString()} • {msg.fromName} • {msg.fromRole}
+                        {new Date(msg.timestamp).toLocaleString()}
                       </span>
                     </div>
                   </div>

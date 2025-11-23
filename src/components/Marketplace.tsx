@@ -16,7 +16,7 @@ import {
   ShoppingBag, Search, Filter, Star,
   MessageSquare, Package, Leaf, DollarSign,
   ShoppingCart, Heart, Plus, Minus, Trash2,
-  CreditCard, Banknote, Smartphone, Truck, Bot
+  CreditCard, Banknote, Smartphone, Truck, Bot, Shield, BarChart3, TrendingUp
 } from 'lucide-react';
 import { formatCustomIdr, formatPriceWithSeparator } from '../utils/currency';
 import { useCart, useAuth } from '../App';
@@ -408,8 +408,9 @@ export default function Marketplace() {
     return () => window.removeEventListener('smartcow_liked_products_updated', onLikedUpdate);
   }, [userId, userName, userRole]);
 
-  const pageTitle = (userRole === 'seller') ? 'My Catalog' : 'Marketplace';
-  const headerTitle = (userRole === 'seller') ? 'My Catalog' : 'Marketplace';
+  const isAdmin = userRole === 'admin';
+  const pageTitle = isAdmin ? 'Marketplace Overview' : (userRole === 'seller') ? 'My Catalog' : 'Marketplace';
+  const headerTitle = isAdmin ? 'Marketplace Overview' : (userRole === 'seller') ? 'My Catalog' : 'Marketplace';
   const navigate = useNavigate();
   const isAuthenticated = !!userRole && !!userName;
 
@@ -456,10 +457,20 @@ export default function Marketplace() {
         >
           <div>
             <h1 className="text-3xl text-gray-900 mb-2">{headerTitle}</h1>
-            <p className="text-gray-600">Buy and sell cow waste, compost, and fertilizer materials</p>
+            <p className="text-gray-600">
+              {isAdmin 
+                ? 'Monitor marketplace activity, products, and transactions' 
+                : 'Buy and sell cow waste, compost, and fertilizer materials'}
+            </p>
           </div>
           <div className="flex gap-2">
-            {isAuthenticated && userRole !== 'seller' && (
+            {isAdmin && (
+              <div className="flex items-center px-4 py-2 rounded-xl border border-blue-200 bg-blue-50 text-sm text-blue-700">
+                <Shield className="w-4 h-4 mr-2" />
+                <span>Admin View - Monitoring Only</span>
+              </div>
+            )}
+            {isAuthenticated && userRole !== 'seller' && !isAdmin && (
               <>
                 <Button
                   variant="outline"
@@ -625,6 +636,61 @@ export default function Marketplace() {
           )}
         </AnimatePresence>
 
+        {/* Admin Marketplace Statistics */}
+        {isAdmin && view === 'browse' && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.25 }}
+            className="grid md:grid-cols-4 gap-4 mb-6"
+          >
+            <Card className="p-6 border-purple-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-1">Total Products</p>
+                  <p className="text-2xl font-bold text-gray-900">{products.length}</p>
+                </div>
+                <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
+                  <Package className="w-6 h-6 text-blue-600" />
+                </div>
+              </div>
+            </Card>
+            <Card className="p-6 border-purple-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-1">Active Products</p>
+                  <p className="text-2xl font-bold text-green-600">{products.filter(p => p.inStock).length}</p>
+                </div>
+                <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
+                  <TrendingUp className="w-6 h-6 text-green-600" />
+                </div>
+              </div>
+            </Card>
+            <Card className="p-6 border-purple-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-1">Total Sellers</p>
+                  <p className="text-2xl font-bold text-purple-600">{new Set(products.map(p => p.sellerId || p.seller)).size}</p>
+                </div>
+                <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
+                  <ShoppingBag className="w-6 h-6 text-purple-600" />
+                </div>
+              </div>
+            </Card>
+            <Card className="p-6 border-purple-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-1">Categories</p>
+                  <p className="text-2xl font-bold text-indigo-600">{new Set(products.map(p => p.category)).size}</p>
+                </div>
+                <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center">
+                  <BarChart3 className="w-6 h-6 text-indigo-600" />
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+
         {/* Main Content Views */}
         {view === 'browse' && (
         <motion.div
@@ -665,6 +731,7 @@ export default function Marketplace() {
                         onToggleFavorite={toggleFavorite}
                         isSeller={userRole === 'seller'}
                         isCompostProcessorOwnProduct={userRole === 'compost_processor' && (product.sellerId === `${userRole}:${userName || 'anonymous'}` || product.seller === (userName || 'Anonymous'))}
+                        isAdmin={isAdmin}
                         isAuthenticated={isAuthenticated}
                         onLoginRequired={() => navigate('/login')}
                       />
@@ -701,7 +768,7 @@ export default function Marketplace() {
                   navigate('/login');
                   return;
                 }
-                if (userRole === 'seller' || (userRole === 'compost_processor' && (product.sellerId === `${userRole}:${userName || 'anonymous'}` || product.seller === (userName || 'Anonymous')))) return;
+                if (isAdmin || userRole === 'seller' || (userRole === 'compost_processor' && (product.sellerId === `${userRole}:${userName || 'anonymous'}` || product.seller === (userName || 'Anonymous')))) return;
                 setSelectedProduct(null);
                 clearCart();
                 addToCartLocal(product);
@@ -709,6 +776,7 @@ export default function Marketplace() {
               }}
               isSeller={userRole === 'seller'}
               isCompostProcessorOwnProduct={userRole === 'compost_processor' && selectedProduct && (selectedProduct.sellerId === `${userRole}:${userName || 'anonymous'}` || selectedProduct.seller === (userName || 'Anonymous'))}
+              isAdmin={isAdmin}
               isAuthenticated={isAuthenticated}
               onLoginRequired={() => navigate('/login')}
             />
@@ -1052,6 +1120,7 @@ function ProductCard({
   onToggleFavorite,
   isSeller,
   isCompostProcessorOwnProduct,
+  isAdmin,
   isAuthenticated,
   onLoginRequired
 }: {
@@ -1062,6 +1131,7 @@ function ProductCard({
   onToggleFavorite: (productId: string) => void;
   isSeller: boolean;
   isCompostProcessorOwnProduct?: boolean;
+  isAdmin?: boolean;
   isAuthenticated?: boolean;
   onLoginRequired?: () => void;
 }) {
@@ -1130,7 +1200,7 @@ function ProductCard({
           <div className="text-xs text-gray-500">{product.unit}</div>
         </div>
 
-        {!(isSeller || isCompostProcessorOwnProduct) && (
+        {!(isSeller || isCompostProcessorOwnProduct || isAdmin) && (
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -1149,12 +1219,18 @@ function ProductCard({
             </Button>
           </div>
         )}
+        {isAdmin && (
+          <div className="flex items-center justify-center gap-2 text-sm text-gray-500 bg-gray-50 rounded-xl py-2 px-3">
+            <Shield className="w-4 h-4" />
+            <span>View Only - Admin Mode</span>
+          </div>
+        )}
       </div>
     </Card>
   );
 }
 
-function ProductDetail({ product, onAddToCart, onBuyNow, isSeller, isCompostProcessorOwnProduct, isAuthenticated, onLoginRequired }: { product: Product; onAddToCart: (product: Product) => void; onBuyNow: (product: Product) => void; isSeller: boolean; isCompostProcessorOwnProduct?: boolean; isAuthenticated?: boolean; onLoginRequired?: () => void }) {
+function ProductDetail({ product, onAddToCart, onBuyNow, isSeller, isCompostProcessorOwnProduct, isAdmin, isAuthenticated, onLoginRequired }: { product: Product; onAddToCart: (product: Product) => void; onBuyNow: (product: Product) => void; isSeller: boolean; isCompostProcessorOwnProduct?: boolean; isAdmin?: boolean; isAuthenticated?: boolean; onLoginRequired?: () => void }) {
   return (
     <div className="space-y-6">
       <div className="flex gap-6">
@@ -1202,7 +1278,7 @@ function ProductDetail({ product, onAddToCart, onBuyNow, isSeller, isCompostProc
                 {product.inStock ? 'In Stock' : 'Out of Stock'}
               </Badge>
             </div>
-            {!isSeller && !isCompostProcessorOwnProduct && (
+            {!isSeller && !isCompostProcessorOwnProduct && !isAdmin && (
               <div className="grid grid-cols-2 gap-3">
                 <Button
                   className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white rounded-xl py-3"
@@ -1232,6 +1308,12 @@ function ProductDetail({ product, onAddToCart, onBuyNow, isSeller, isCompostProc
                 >
                   Buy Now
                 </Button>
+              </div>
+            )}
+            {isAdmin && (
+              <div className="flex items-center justify-center gap-2 text-sm text-gray-500 bg-gray-50 rounded-xl py-3 px-4 border border-gray-200">
+                <Shield className="w-4 h-4" />
+                <span>Admin View - Purchase disabled</span>
               </div>
             )}
           </div>

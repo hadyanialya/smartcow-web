@@ -5,7 +5,7 @@
 const ROBOT_MINUTE_CHART_KEY = 'ROBOT_MINUTE_CHART';
 
 export interface MinuteChartDataPoint {
-  time: string; // Format: "HH:mm"
+  time: string; // Format: "HH:mm:ss" (rounded to 10 seconds)
   collectedKg: number;
   timestamp: string; // ISO string for sorting and cleanup
 }
@@ -54,24 +54,27 @@ function cleanupOldData(data: MinuteChartDataPoint[]): MinuteChartDataPoint[] {
 }
 
 /**
- * Group activities by minute and sum collectedKg
+ * Group activities by 10 seconds and sum collectedKg
  */
 export function groupByMinute(activities: Array<{ time: string; collectedKg: number; timestamp: string }>): MinuteChartDataPoint[] {
   const grouped = new Map<string, { collectedKg: number; timestamp: string }>();
   
   activities.forEach(activity => {
-    // Extract minute from time (format: "HH:mm:ss" -> "HH:mm")
-    const minuteKey = activity.time.substring(0, 5);
+    // Extract time and round seconds to nearest 10 seconds
+    // Format: "HH:mm:ss" -> "HH:mm:00", "HH:mm:10", "HH:mm:20", etc.
+    const [hours, minutes, seconds] = activity.time.split(':').map(Number);
+    const roundedSeconds = Math.floor(seconds / 10) * 10;
+    const tenSecondKey = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(roundedSeconds).padStart(2, '0')}`;
     
-    if (grouped.has(minuteKey)) {
-      const existing = grouped.get(minuteKey)!;
+    if (grouped.has(tenSecondKey)) {
+      const existing = grouped.get(tenSecondKey)!;
       existing.collectedKg += activity.collectedKg;
-      // Keep the earliest timestamp for this minute
+      // Keep the earliest timestamp for this 10-second interval
       if (new Date(activity.timestamp) < new Date(existing.timestamp)) {
         existing.timestamp = activity.timestamp;
       }
     } else {
-      grouped.set(minuteKey, {
+      grouped.set(tenSecondKey, {
         collectedKg: activity.collectedKg,
         timestamp: activity.timestamp,
       });
