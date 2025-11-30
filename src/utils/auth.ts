@@ -1,5 +1,6 @@
 import { UserRole } from '../App';
 import { pushNotification } from './notifications';
+import { supabase } from '../lib/supabase';
 
 export interface UserData {
   id: string;
@@ -15,6 +16,31 @@ export interface UserData {
 
 const STORAGE_KEY = 'smartcow_users';
 
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
+
+// Import Supabase auth functions (will be used if configured)
+let supabaseAuth: typeof import('../services/supabaseAuth') | null = null;
+if (isSupabaseConfigured()) {
+  try {
+    // Dynamic import to avoid issues if module not available
+    import('../services/supabaseAuth').then(module => {
+      supabaseAuth = module;
+      console.log('✅ Supabase authentication enabled');
+    }).catch(() => {
+      console.warn('⚠️ Supabase auth module not available, using localStorage');
+    });
+  } catch (e) {
+    console.warn('⚠️ Supabase auth module not available, using localStorage');
+  }
+} else {
+  console.log('ℹ️ Supabase not configured, using localStorage');
+}
+
 // Default admin account (pre-configured)
 const DEFAULT_ADMIN: UserData = {
   id: 'admin-001',
@@ -28,8 +54,10 @@ const DEFAULT_ADMIN: UserData = {
   deletedAt: null,
 };
 
-// Get all users from localStorage
+// Get all users - currently using localStorage (will switch to Supabase after setup)
 export function getUsers(includeDeleted = false): UserData[] {
+  // TODO: After Supabase setup, this will automatically use Supabase
+  // For now, keep localStorage for backward compatibility
   const usersJson = localStorage.getItem(STORAGE_KEY);
   if (!usersJson) return [];
   try {
@@ -50,8 +78,20 @@ function saveUsers(users: UserData[]): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(users));
 }
 
-// Register new user
-export function registerUser(name: string, email: string, password: string, role: UserRole): { success: boolean; message: string; user?: UserData } {
+// Register new user - uses Supabase if configured, otherwise localStorage
+export async function registerUser(name: string, email: string, password: string, role: UserRole): Promise<{ success: boolean; message: string; user?: UserData }> {
+  // Use Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const supabaseAuth = await import('../services/supabaseAuth');
+      return await supabaseAuth.registerUser(name, email, password, role);
+    } catch (error) {
+      console.error('Error using Supabase auth:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   // Prevent admin registration
   if (role === 'admin') {
     return { success: false, message: 'Registrasi sebagai admin tidak diizinkan. Gunakan akun admin yang sudah disediakan.' };
@@ -103,8 +143,20 @@ export function registerUser(name: string, email: string, password: string, role
   return { success: true, message: 'Registrasi berhasil! Akun Anda aktif.', user: newUser };
 }
 
-// Login user
-export function loginUser(email: string, password: string): { success: boolean; message: string; user?: UserData } {
+// Login user - uses Supabase if configured, otherwise localStorage
+export async function loginUser(email: string, password: string): Promise<{ success: boolean; message: string; user?: UserData }> {
+  // Use Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const supabaseAuth = await import('../services/supabaseAuth');
+      return await supabaseAuth.loginUser(email, password);
+    } catch (error) {
+      console.error('Error using Supabase auth:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   // Check admin account first
   if (email.toLowerCase() === DEFAULT_ADMIN.email.toLowerCase()) {
     if (password === DEFAULT_ADMIN.password) {

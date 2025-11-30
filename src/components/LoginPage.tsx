@@ -45,7 +45,7 @@ export default function LoginPage() {
     // Simulate API delay
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    const result = loginUser(loginForm.email, loginForm.password);
+    const result = await loginUser(loginForm.email, loginForm.password);
     
     if (result.success && result.user) {
       // Check if role matches
@@ -89,7 +89,7 @@ export default function LoginPage() {
     // Simulate API delay
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    const result = registerUser(
+    const result = await registerUser(
       registerForm.name,
       registerForm.email,
       registerForm.password,
