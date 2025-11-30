@@ -76,12 +76,16 @@ export async function registerUser(
 ): Promise<{ success: boolean; message: string; user?: UserData }> {
   try {
     // Check if email already exists
-    const { data: existing } = await supabase
+    const { data: existing, error: checkError } = await supabase
       .from('users')
       .select('id')
       .eq('email', email)
       .is('deleted_at', null)
-      .single();
+      .maybeSingle(); // Use maybeSingle instead of single to handle no results
+    
+    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error checking existing user:', checkError);
+    }
     
     if (existing) {
       return { success: false, message: 'Email already registered' };
@@ -102,9 +106,17 @@ export async function registerUser(
       .single();
     
     if (error) {
-      console.error('Error registering user:', error);
+      console.error('❌ Error registering user:', error);
+      console.error('❌ Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      });
       return { success: false, message: error.message || 'Failed to register user' };
     }
+    
+    console.log('✅ User registered successfully:', data);
     
     const user = supabaseToUserData(data);
     

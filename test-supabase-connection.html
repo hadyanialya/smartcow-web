@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Supabase Connection</title>
+</head>
+<body>
+    <h1>Test Supabase Connection</h1>
+    <button onclick="testConnection()">Test Connection</button>
+    <button onclick="testInsert()">Test Insert User</button>
+    <button onclick="testSelect()">Test Select Users</button>
+    <div id="result"></div>
+
+    <script type="module">
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+        
+        const supabaseUrl = 'https://endpykeaditbalyjrxdw.supabase.co';
+        const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVuZHB5a2VhZGl0YmFseWpyeGR3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ1MDEwMzQsImV4cCI6MjA4MDA3NzAzNH0.dENeFjOxHwiubkAtJ6rmKP7dCfu6pa_vQ1UHjR6NdVk';
+        
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        
+        window.testConnection = async () => {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testing connection...';
+            
+            try {
+                const { data, error } = await supabase.from('users').select('count').limit(1);
+                
+                if (error) {
+                    resultDiv.innerHTML = `❌ Error: ${error.message}<br>Code: ${error.code}<br>Details: ${JSON.stringify(error.details)}`;
+                } else {
+                    resultDiv.innerHTML = '✅ Connection successful!';
+                }
+            } catch (e) {
+                resultDiv.innerHTML = `❌ Exception: ${e.message}`;
+            }
+        };
+        
+        window.testSelect = async () => {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testing select...';
+            
+            try {
+                const { data, error } = await supabase.from('users').select('*').limit(5);
+                
+                if (error) {
+                    resultDiv.innerHTML = `❌ Error: ${error.message}`;
+                } else {
+                    resultDiv.innerHTML = `✅ Found ${data.length} users:<br><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                }
+            } catch (e) {
+                resultDiv.innerHTML = `❌ Exception: ${e.message}`;
+            }
+        };
+        
+        window.testInsert = async () => {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testing insert...';
+            
+            try {
+                const testUser = {
+                    name: 'Test User ' + Date.now(),
+                    email: 'test' + Date.now() + '@example.com',
+                    password: 'test123',
+                    role: 'farmer',
+                    status: 'active',
+                    created_at: new Date().toISOString()
+                };
+                
+                const { data, error } = await supabase
+                    .from('users')
+                    .insert(testUser)
+                    .select()
+                    .single();
+                
+                if (error) {
+                    resultDiv.innerHTML = `❌ Error: ${error.message}<br>Code: ${error.code}<br>Details: ${JSON.stringify(error.details)}<br>Hint: ${error.hint}`;
+                } else {
+                    resultDiv.innerHTML = `✅ User inserted successfully!<br><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                }
+            } catch (e) {
+                resultDiv.innerHTML = `❌ Exception: ${e.message}`;
+            }
+        };
+    </script>
+</body>
+</html>
+
