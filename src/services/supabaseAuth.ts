@@ -187,7 +187,79 @@ export async function createUserByAdmin(
   password: string,
   role: UserRole
 ): Promise<{ success: boolean; message: string; user?: UserData }> {
-  return registerUser(name, email, password, role);
+  try {
+    // Validate inputs
+    const trimmedName = name.trim();
+    const trimmedEmail = email.toLowerCase().trim();
+    
+    if (trimmedName.length < 2) {
+      return { success: false, message: 'Nama minimal 2 karakter.' };
+    }
+    
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      return { success: false, message: 'Format email tidak valid.' };
+    }
+    
+    if (password.length < 6) {
+      return { success: false, message: 'Kata sandi minimal 6 karakter.' };
+    }
+    
+    // Check if email already exists
+    const { data: existingEmail } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', trimmedEmail)
+      .is('deleted_at', null)
+      .maybeSingle();
+    
+    if (existingEmail) {
+      return { success: false, message: 'Email sudah terdaftar.' };
+    }
+    
+    // Check if name already exists for this role
+    const { data: existingName } = await supabase
+      .from('users')
+      .select('id')
+      .eq('name', trimmedName)
+      .eq('role', role)
+      .is('deleted_at', null)
+      .maybeSingle();
+    
+    if (existingName) {
+      return { success: false, message: 'Username sudah digunakan untuk role ini.' };
+    }
+    
+    // Insert new user
+    const { data, error } = await supabase
+      .from('users')
+      .insert({
+        name: trimmedName,
+        email: trimmedEmail,
+        password, // TODO: Hash password properly in production
+        role,
+        status: 'active',
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('❌ Error creating user:', error);
+      return { success: false, message: error.message || 'Gagal membuat user.' };
+    }
+    
+    if (!data) {
+      return { success: false, message: 'Gagal membuat user. Data tidak ditemukan.' };
+    }
+    
+    const newUser = supabaseToUserData(data);
+    console.log('✅ User created successfully in Supabase:', newUser.name);
+    return { success: true, message: 'User berhasil dibuat.', user: newUser };
+  } catch (error: any) {
+    console.error('❌ Error in createUserByAdmin:', error);
+    return { success: false, message: error.message || 'Gagal membuat user.' };
+  }
 }
 
 // Search users

@@ -119,7 +119,7 @@ export async function registerUser(name: string, email: string, password: string
     return { success: false, message: 'Registrasi sebagai admin tidak diizinkan. Gunakan akun admin yang sudah disediakan.' };
   }
 
-  const users = getUsers(true);
+  const users = await getUsers(true);
   
   // Check if email already exists (including admin email)
   if (users.some(u => u.email.toLowerCase() === email.toLowerCase()) || 
@@ -505,18 +505,56 @@ export async function resetPasswordById(id: string, tempPassword: string): Promi
   return { success: true, message: 'Password reset.' };
 }
 
-export function createUserByAdmin(name: string, email: string, tempPassword: string, role: UserRole) {
+export async function createUserByAdmin(name: string, email: string, tempPassword: string, role: UserRole): Promise<{ success: boolean; message: string; user?: UserData }> {
   if (role === 'admin') {
     return { success: false, message: 'Cannot create admin accounts in this demo.' };
   }
-  const users = getUsersSync(true);
-  if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+  
+  // Validate inputs first
+  const trimmedName = name.trim();
+  const trimmedEmail = email.toLowerCase().trim();
+  
+  if (trimmedName.length < 2) {
+    return { success: false, message: 'Nama minimal 2 karakter.' };
+  }
+  
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(trimmedEmail)) {
+    return { success: false, message: 'Format email tidak valid.' };
+  }
+  
+  if (tempPassword.length < 6) {
+    return { success: false, message: 'Kata sandi minimal 6 karakter.' };
+  }
+  
+  // Use Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const supabaseAuth = await import('../services/supabaseAuth');
+      const result = await supabaseAuth.createUserByAdmin(trimmedName, trimmedEmail, tempPassword, role);
+      if (result.success) {
+        console.log('✅ User created in Supabase:', result.user?.name);
+        return result;
+      } else {
+        console.error('❌ Failed to create user in Supabase:', result.message);
+        // If Supabase fails, fallback to localStorage
+      }
+    } catch (error: any) {
+      console.error('❌ Error creating user in Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
+  const users = await getUsers(true);
+  if (users.some(u => u.email.toLowerCase() === trimmedEmail.toLowerCase())) {
     return { success: false, message: 'Email sudah terdaftar.' };
   }
+  
   const newUser: UserData = {
     id: Date.now().toString(),
-    name: name.trim(),
-    email: email.toLowerCase().trim(),
+    name: trimmedName,
+    email: trimmedEmail,
     password: tempPassword,
     role,
     createdAt: new Date().toISOString(),
@@ -524,9 +562,11 @@ export function createUserByAdmin(name: string, email: string, tempPassword: str
     lastLogin: undefined,
     deletedAt: null,
   };
+  
   users.push(newUser);
-  localStorage.setItem('smartcow_users', JSON.stringify(users));
-  return { success: true, message: 'User created.', user: newUser };
+  saveUsers(users);
+  console.log('✅ User created in localStorage:', newUser.name);
+  return { success: true, message: 'User created successfully.', user: newUser };
 }
 
 export function searchUsers(keyword: string, role?: UserRole, status?: UserData['status'], usersList?: UserData[]) {

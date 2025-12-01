@@ -130,7 +130,26 @@ export default function AdminDashboard() {
   };
   const refreshPendingArticles = () => { try { const saved = localStorage.getItem(PENDING_ARTICLES_KEY); setPendingArticles(saved ? JSON.parse(saved) : []); } catch { setPendingArticles([]); } };
 
-  const onCreateUser = () => { const res = createUserByAdmin(creating.name, creating.email, creating.password, creating.role as any); if (!res.success) return; setCreating({ name: "", email: "", password: "", role: "farmer" }); refreshUsers(); };
+  const onCreateUser = async () => {
+    if (!creating.name.trim() || !creating.email.trim() || !creating.password.trim()) {
+      toast.error('Harap isi semua field');
+      return;
+    }
+    
+    try {
+      const res = await createUserByAdmin(creating.name, creating.email, creating.password, creating.role as any);
+      if (!res.success) {
+        toast.error(res.message || 'Gagal membuat user');
+        return;
+      }
+      toast.success(res.message || 'User berhasil dibuat');
+      setCreating({ name: "", email: "", password: "", role: "farmer" });
+      await refreshUsers();
+    } catch (error: any) {
+      console.error('Error creating user:', error);
+      toast.error(error.message || 'Terjadi kesalahan saat membuat user');
+    }
+  };
   const approveUser = async (id: string) => { 
     const result = await setStatusById(id, 'active');
     if (result.success) {
