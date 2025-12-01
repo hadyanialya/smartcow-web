@@ -492,19 +492,42 @@ export async function setStatusById(
 // Reset password by ID
 export async function resetPasswordById(userId: string, tempPassword: string): Promise<boolean> {
   try {
+    console.log('🔐 Resetting password for userId:', userId);
+    
+    // First, check if user exists
+    const { data: userData, error: findError } = await supabase
+      .from('users')
+      .select('id, name, email')
+      .eq('id', userId)
+      .maybeSingle();
+    
+    if (findError) {
+      console.error('❌ Error finding user:', findError);
+      return false;
+    }
+    
+    if (!userData) {
+      console.error('❌ User not found with id:', userId);
+      return false;
+    }
+    
+    console.log('✅ User found:', { id: userData.id, name: userData.name, email: userData.email });
+    
+    // Update password
     const { error } = await supabase
       .from('users')
       .update({ password: tempPassword }) // TODO: Hash password properly
       .eq('id', userId);
     
     if (error) {
-      console.error('Error resetting password:', error);
+      console.error('❌ Error resetting password:', error);
       return false;
     }
     
+    console.log('✅ Password reset successfully');
     return true;
   } catch (error) {
-    console.error('Error in resetPasswordById:', error);
+    console.error('❌ Error in resetPasswordById:', error);
     return false;
   }
 }

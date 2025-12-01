@@ -123,8 +123,24 @@ export default function Chat() {
       try {
         const u = await getUsers();
         const admin = getAdminAccount();
-        const list = [admin, ...(Array.isArray(u) ? u : [])];
-        const mapped = list.map(x => ({ id: `${x.role}:${x.name}`, name: x.name, role: x.role || 'admin' }));
+        const adminId = `${admin.role}:${admin.name}`;
+        
+        // Filter out admin from users list if it exists, then add admin at the beginning
+        const usersList = Array.isArray(u) ? u : [];
+        const filteredUsers = usersList.filter(x => `${x.role}:${x.name}` !== adminId);
+        
+        const list = [admin, ...filteredUsers];
+        // Use Set to ensure unique IDs
+        const seen = new Set<string>();
+        const mapped = list
+          .map(x => ({ id: `${x.role}:${x.name}`, name: x.name, role: x.role || 'admin' }))
+          .filter(x => {
+            if (seen.has(x.id)) {
+              return false;
+            }
+            seen.add(x.id);
+            return true;
+          });
         setAllUsers(mapped);
       } catch (error) {
         console.error('Error loading users:', error);

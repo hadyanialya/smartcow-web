@@ -372,10 +372,27 @@ export function updatePasswordByNameRole(name: string, role: UserRole, oldPasswo
   return { success: true, message: 'Password changed successfully.' };
 }
 
-export function deleteAccountByNameRole(name: string, role: UserRole) {
+export async function deleteAccountByNameRole(name: string, role: UserRole): Promise<{ success: boolean; message: string }> {
   if (role === 'admin' && DEFAULT_ADMIN.name === name) {
     return { success: false, message: 'Admin account cannot be deleted.' };
   }
+  
+  // Use Supabase if configured
+  if (isSupabaseConfigured() && supabaseAuth) {
+    try {
+      const success = await supabaseAuth.deleteAccountByNameRole(name, role);
+      if (success) {
+        return { success: true, message: 'Account deleted.' };
+      } else {
+        return { success: false, message: 'Failed to delete account.' };
+      }
+    } catch (error) {
+      console.error('Error deleting account in Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   const users = getUsersSync(true);
   const idx = users.findIndex(u => u.name === name && u.role === role);
   if (idx === -1) return { success: false, message: 'User not found.' };
@@ -385,7 +402,23 @@ export function deleteAccountByNameRole(name: string, role: UserRole) {
   return { success: true, message: 'Account deleted.' };
 }
 
-export function restoreAccountById(id: string) {
+export async function restoreAccountById(id: string): Promise<{ success: boolean; message: string }> {
+  // Use Supabase if configured
+  if (isSupabaseConfigured() && supabaseAuth) {
+    try {
+      const success = await supabaseAuth.restoreAccountById(id);
+      if (success) {
+        return { success: true, message: 'Account restored.' };
+      } else {
+        return { success: false, message: 'Failed to restore account.' };
+      }
+    } catch (error) {
+      console.error('Error restoring account in Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
@@ -394,10 +427,27 @@ export function restoreAccountById(id: string) {
   return { success: true, message: 'Account restored.' };
 }
 
-export function changeRoleById(id: string, role: UserRole) {
+export async function changeRoleById(id: string, role: UserRole): Promise<{ success: boolean; message: string }> {
   if (role === 'admin') {
     return { success: false, message: 'Cannot promote to admin in this demo.' };
   }
+  
+  // Use Supabase if configured
+  if (isSupabaseConfigured() && supabaseAuth) {
+    try {
+      const success = await supabaseAuth.changeRoleById(id, role);
+      if (success) {
+        return { success: true, message: 'Role updated.' };
+      } else {
+        return { success: false, message: 'Failed to update role.' };
+      }
+    } catch (error) {
+      console.error('Error updating role in Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
@@ -406,7 +456,23 @@ export function changeRoleById(id: string, role: UserRole) {
   return { success: true, message: 'Role updated.' };
 }
 
-export function setStatusById(id: string, status: UserData['status']) {
+export async function setStatusById(id: string, status: UserData['status']): Promise<{ success: boolean; message: string }> {
+  // Use Supabase if configured
+  if (isSupabaseConfigured() && supabaseAuth) {
+    try {
+      const success = await supabaseAuth.setStatusById(id, status);
+      if (success) {
+        return { success: true, message: 'Status updated.' };
+      } else {
+        return { success: false, message: 'Failed to update status.' };
+      }
+    } catch (error) {
+      console.error('Error updating status in Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
@@ -415,7 +481,23 @@ export function setStatusById(id: string, status: UserData['status']) {
   return { success: true, message: 'Status updated.' };
 }
 
-export function resetPasswordById(id: string, tempPassword: string) {
+export async function resetPasswordById(id: string, tempPassword: string): Promise<{ success: boolean; message: string }> {
+  // Use Supabase if configured
+  if (isSupabaseConfigured() && supabaseAuth) {
+    try {
+      const success = await supabaseAuth.resetPasswordById(id, tempPassword);
+      if (success) {
+        return { success: true, message: 'Password reset.' };
+      } else {
+        return { success: false, message: 'Failed to reset password. User not found.' };
+      }
+    } catch (error) {
+      console.error('Error resetting password in Supabase:', error);
+      return { success: false, message: 'Failed to reset password. User not found.' };
+    }
+  }
+  
+  // Fallback to localStorage
   const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };

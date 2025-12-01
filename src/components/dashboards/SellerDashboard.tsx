@@ -22,7 +22,7 @@ export default function SellerDashboard() {
   const sellerId = `${userRole}:${userName || 'anonymous'}`;
   const sellerName = userName || 'Anonymous';
 
-  const [overview, setOverview] = useState(() => getOverview(sellerId));
+  const [overview, setOverview] = useState<{ totalProducts: number; totalSalesIdr: number; educationalPosts: number; inquiries: number }>({ totalProducts: 0, totalSalesIdr: 0, educationalPosts: 0, inquiries: 0 });
   const [products, setProducts] = useState<any[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
   const [likedProductIds, setLikedProductIds] = useState<string[]>(() => getLikedProducts(sellerId));
@@ -41,14 +41,16 @@ export default function SellerDashboard() {
   
     const refreshData = async () => {
       try {
-        const [productsData, ordersData, marketplaceData] = await Promise.all([
+        const [productsData, ordersData, marketplaceData, overviewData] = await Promise.all([
           getCpProducts(sellerId),
           getCpOrders(sellerId),
           getMarketplaceProducts(),
+          getOverview(sellerId),
         ]);
         setProducts(productsData);
         setOrders(ordersData);
         setMarketplace(marketplaceData);
+        setOverview(overviewData);
       } catch (error) {
         console.error('Error refreshing data:', error);
         // Fallback to localStorage
@@ -63,8 +65,12 @@ export default function SellerDashboard() {
           if (ordersJson) setOrders(JSON.parse(ordersJson));
           if (marketplaceJson) setMarketplace(JSON.parse(marketplaceJson));
         } catch {}
+        // Fallback overview calculation
+        try {
+          const fallbackOverview = await getOverview(sellerId);
+          setOverview(fallbackOverview);
+        } catch {}
       }
-      setOverview(getOverview(sellerId));
       setLikedProductIds(getLikedProducts(sellerId));
     };
   
@@ -151,14 +157,17 @@ export default function SellerDashboard() {
         } catch {}
       }
     };
-    refreshAfterSave();
-    setOverview(getOverview(sellerId));
+    await refreshAfterSave();
+    const updatedOverview = await getOverview(sellerId);
+    setOverview(updatedOverview);
     // Dispatch events to ensure marketplace and other components update
     try { 
       window.dispatchEvent(new CustomEvent('smartcow_marketplace_updated', { detail: { cpId: sellerId } } as any)); 
       // Also dispatch storage event for same-window listeners
       const productsKey = `smartcow_cp_products:${sellerId}`;
       const marketplaceKey = 'smartcow_marketplace_products';
+      const updatedProducts = await getCpProducts(sellerId);
+      const updatedMarketplace = await getMarketplaceProducts();
       window.dispatchEvent(new StorageEvent('storage', { key: productsKey, newValue: JSON.stringify(updatedProducts) } as any));
       window.dispatchEvent(new StorageEvent('storage', { key: marketplaceKey, newValue: JSON.stringify(updatedMarketplace) } as any));
     } catch {}
@@ -170,7 +179,8 @@ export default function SellerDashboard() {
     await deleteCpProduct(sellerId, p.id);
     const updatedProducts = await getCpProducts(sellerId);
     setProducts(updatedProducts);
-    setOverview(getOverview(sellerId));
+    const updatedOverview = await getOverview(sellerId);
+    setOverview(updatedOverview);
   };
 
   const completeOrder = async (order: any) => {
@@ -178,7 +188,7 @@ export default function SellerDashboard() {
       await updateOrderStatus(sellerId, order.id, 'completed');
       // Force refresh all data immediately
       const updatedOrders = await getCpOrders(sellerId);
-      const updatedOverview = getOverview(sellerId);
+      const updatedOverview = await getOverview(sellerId);
       setOrders(updatedOrders);
       setOverview(updatedOverview);
       toast.success(`Order completed — Revenue increased by ${formatCustomIdr(order.totalIdr)}`);

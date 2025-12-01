@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { formatCustomIdr, formatPriceWithSeparator } from '../utils/currency';
 import { useCart, useAuth } from '../App';
-import { getMarketplaceProducts, createOrderForSeller, addLikedProduct, removeLikedProduct, isProductLiked, getLikedProducts } from '../services/backend';
+import { getMarketplaceProducts, createOrderForSeller, addLikedProduct, removeLikedProduct, isProductLiked, getLikedProducts, getBuyerOrders } from '../services/backend';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { loadSettings, saveSettings } from '../utils/settings';
 
@@ -1036,31 +1036,50 @@ export default function Marketplace() {
                         if (prev <= 1) {
                           clearInterval(timer);
                           setBalance(prevBal => prevBal - idrTotal);
-                          setOrders(prev => {
-                            const choices = ['Being Packed', 'In Delivery', 'Completed'] as const;
-                            const statusChoice = choices[Math.floor(Math.random() * choices.length)] as 'Being Packed' | 'In Delivery' | 'Completed';
-                            return [
-                              {
-                                id,
-                                items: paymentCheckoutItems,
-                                totalIdr: idrTotal,
-                                status: statusChoice,
-                                createdAt: Date.now(),
-                                trackingNo: tracking
-                              },
-                              ...prev
-                            ];
-                          });
+                          // Create orders in database first, then reload to get correct status
                           (async () => {
                             try {
+                              const buyerId = `${userRole}:${userName || 'anonymous'}`;
+                              const buyerName = userName || 'Anonymous';
                               for (const it of paymentCheckoutItems) {
                                 if (it.sellerId) {
-                                  const buyerId = `${userRole}:${userName || 'anonymous'}`;
-                                  const buyerName = userName || 'Anonymous';
                                   await createOrderForSeller({ productId: it.id, productName: it.name, sellerId: it.sellerId, sellerName: it.seller, buyerId, buyerName, quantity: it.quantity, totalIdr: Math.round(it.price * it.quantity) });
                                 }
                               }
-                            } catch {}
+                              // Wait a bit for orders to be saved, then reload from database
+                              await new Promise(resolve => setTimeout(resolve, 500));
+                              // Reload orders from database after creating orders
+                              const dbOrders = await getBuyerOrders(buyerId);
+                              const uiOrders = dbOrders.map(o => {
+                                // Map database status to UI display status
+                                let displayStatus: 'Being Packed' | 'In Delivery' | 'Completed' = 'Being Packed';
+                                if (o.status === 'completed' || o.status === 'delivered') {
+                                  displayStatus = 'Completed';
+                                } else if (o.status === 'shipping') {
+                                  displayStatus = 'In Delivery';
+                                } else {
+                                  // packaging, pending, processing → Being Packed (Dikemas)
+                                  displayStatus = 'Being Packed';
+                                }
+                                return {
+                                  id: o.id,
+                                  items: [{ 
+                                    id: o.productId, 
+                                    name: o.productName, 
+                                    quantity: o.quantity,
+                                    price: o.totalIdr / o.quantity
+                                  }],
+                                  totalIdr: o.totalIdr,
+                                  status: displayStatus,
+                                  createdAt: new Date(o.createdAt).getTime(),
+                                  trackingNo: `TRK-${o.id.slice(-8).toUpperCase()}`
+                                };
+                              });
+                              // Update orders state with fresh data from database
+                              setOrders(uiOrders);
+                            } catch (error) {
+                              console.error('Error creating orders:', error);
+                            }
                           })();
                           setView('payment-success');
                           return 0;

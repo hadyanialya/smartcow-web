@@ -19,7 +19,7 @@ import {
   getCpProducts, createCpProduct, updateCpProduct, deleteCpProduct,
   getCpArticles, createDraftArticle, updateArticle, submitArticleForApproval,
   getCpOrders, updateOrderStatus, getOverview,
-  saveCpArticles, getMarketplaceProducts
+  saveCpArticles, getMarketplaceProducts, autoUpdateOrderStatuses
 } from '../../services/backend';
 
 export default function CompostProcessorDashboard() {
@@ -27,7 +27,7 @@ export default function CompostProcessorDashboard() {
   const cpId = `${userRole}:${userName || 'anonymous'}`;
   const cpName = userName || 'Anonymous';
 
-  const [overview, setOverview] = useState(() => getOverview(cpId));
+  const [overview, setOverview] = useState<{ totalProducts: number; totalSalesIdr: number; educationalPosts: number; inquiries: number }>({ totalProducts: 0, totalSalesIdr: 0, educationalPosts: 0, inquiries: 0 });
   const [products, setProducts] = useState<Product[]>([]);
   const [articles, setArticles] = useState<Article[]>(() => getCpArticles(cpId));
   const [orders, setOrders] = useState<Order[]>([]);
@@ -66,14 +66,16 @@ export default function CompostProcessorDashboard() {
 
     const refreshData = async () => {
       try {
-        const [productsData, ordersData, marketplaceData] = await Promise.all([
+        const [productsData, ordersData, marketplaceData, overviewData] = await Promise.all([
           getCpProducts(cpId),
           getCpOrders(cpId),
           getMarketplaceProducts(),
+          getOverview(cpId),
         ]);
         setProducts(productsData);
         setOrders(ordersData);
         setMarketplace(marketplaceData);
+        setOverview(overviewData);
       } catch (error) {
         console.error('Error refreshing data:', error);
         // Fallback to sync versions
@@ -90,9 +92,13 @@ export default function CompostProcessorDashboard() {
           if (ordersJson) setOrders(JSON.parse(ordersJson));
           if (marketplaceJson) setMarketplace(JSON.parse(marketplaceJson));
         } catch {}
+        // Fallback overview calculation
+        try {
+          const fallbackOverview = await getOverview(cpId);
+          setOverview(fallbackOverview);
+        } catch {}
       }
       setArticles(getCpArticles(cpId));
-      setOverview(getOverview(cpId));
     };
 
     const onStorageOrUpdate = (e: StorageEvent | CustomEvent) => {
@@ -111,7 +117,19 @@ export default function CompostProcessorDashboard() {
     window.addEventListener('smartcow_liked_products_updated', onStorageOrUpdate);
 
     refreshData();
-    const poll = setInterval(() => setOverview(getOverview(cpId)), 1000);
+    
+    // Auto-update order statuses every minute
+    const statusUpdateInterval = setInterval(async () => {
+      await autoUpdateOrderStatuses();
+      // Refresh orders after auto-update
+      const updatedOrders = await getCpOrders(cpId);
+      setOrders(updatedOrders);
+    }, 60000); // Check every minute
+    
+    const poll = setInterval(async () => {
+      const updatedOverview = await getOverview(cpId);
+      setOverview(updatedOverview);
+    }, 1000);
 
     return () => {
       window.removeEventListener('storage', onStorageOrUpdate);
@@ -119,6 +137,7 @@ export default function CompostProcessorDashboard() {
       window.removeEventListener('smartcow_revenue_updated', onStorageOrUpdate);
       window.removeEventListener('smartcow_liked_products_updated', onStorageOrUpdate);
       clearInterval(poll);
+      clearInterval(statusUpdateInterval);
     };
   }, [cpId]);
 
@@ -177,14 +196,17 @@ export default function CompostProcessorDashboard() {
         } catch {}
       }
     };
-    refreshAfterSave();
-    setOverview(getOverview(cpId));
+    await refreshAfterSave();
+    const updatedOverview = await getOverview(cpId);
+    setOverview(updatedOverview);
     // Dispatch events to ensure marketplace and other components update
     try { 
       window.dispatchEvent(new CustomEvent('smartcow_marketplace_updated', { detail: { cpId } } as any)); 
       // Also dispatch storage event for same-window listeners
       const productsKey = `smartcow_cp_products:${cpId}`;
       const marketplaceKey = 'smartcow_marketplace_products';
+      const updatedProducts = await getCpProducts(cpId);
+      const updatedMarketplace = await getMarketplaceProducts();
       window.dispatchEvent(new StorageEvent('storage', { key: productsKey, newValue: JSON.stringify(updatedProducts) } as any));
       window.dispatchEvent(new StorageEvent('storage', { key: marketplaceKey, newValue: JSON.stringify(updatedMarketplace) } as any));
     } catch {}
@@ -196,7 +218,8 @@ export default function CompostProcessorDashboard() {
     await deleteCpProduct(cpId, p.id);
     const updatedProducts = await getCpProducts(cpId);
     setProducts(updatedProducts);
-    setOverview(getOverview(cpId));
+    const updatedOverview = await getOverview(cpId);
+    setOverview(updatedOverview);
   };
 
   const startCreateArticle = () => {
@@ -217,7 +240,7 @@ export default function CompostProcessorDashboard() {
     });
     setShowArticleForm(true);
   };
-  const saveArticle = () => {
+  const saveArticle = async () => {
     if (!articleForm.title || !articleForm.category || !articleForm.content) {
       toast.error('Please fill in all required fields (Title, Category, and Content)');
       return;
@@ -265,20 +288,27 @@ export default function CompostProcessorDashboard() {
     })();
     setShowArticleForm(false);
     setEditingArticle(null);
-    setOverview(getOverview(cpId));
+    const updatedOverview = await getOverview(cpId);
+    setOverview(updatedOverview);
     toast.success(editingArticle ? 'Article updated and submitted for review' : 'Article created and submitted for review');
   };
   const submitArticle = async (a: Article) => {
     await submitArticleForApproval(cpId, a.id);
     setArticles(getCpArticles(cpId));
+    const updatedOverview = await getOverview(cpId);
+    setOverview(updatedOverview);
   };
 
   const completeOrder = async (order: Order) => {
     try {
+      console.log(`🔄 Completing order: ${order.id}, cpId: ${cpId}`);
       await updateOrderStatus(cpId, order.id, 'completed');
+      // Small delay to ensure revenue is saved to localStorage
+      await new Promise(resolve => setTimeout(resolve, 100));
       // Force refresh all data immediately
       const updatedOrders = await getCpOrders(cpId);
-      const updatedOverview = getOverview(cpId);
+      const updatedOverview = await getOverview(cpId);
+      console.log(`📊 Updated overview after complete order:`, updatedOverview);
       setOrders(updatedOrders);
       setOverview(updatedOverview);
       toast.success(`Order completed — Revenue increased by ${formatCustomIdr(order.totalIdr)}`);
@@ -507,12 +537,12 @@ export default function CompostProcessorDashboard() {
             <TabsContent value="orders" className="p-6 space-y-4">
               <h3 className="text-lg text-gray-900">Recent Orders</h3>
               <div className="space-y-3">
-                {orders.filter(o => o.status !== 'completed').length === 0 && (
+                {orders.filter(o => o.status !== 'completed' && o.status !== 'delivered').length === 0 && (
                   <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-500">
                     No pending orders
                   </div>
                 )}
-                {orders.filter(o => o.status !== 'completed').map(o => (
+                {orders.filter(o => o.status !== 'completed' && o.status !== 'delivered').map(o => (
                   <OrderCard
                     key={o.id}
                     orderId={o.id}
@@ -641,7 +671,7 @@ function OrderCard({ orderId, product, buyer, quantity, amount, status, onAdvanc
         <Badge className={statusColors[status as keyof typeof statusColors]}>
           {status}
         </Badge>
-        {status !== 'completed' && onAdvanceStatus && (
+        {status !== 'completed' && status !== 'delivered' && onAdvanceStatus && (
           <Button size="sm" variant="outline" className="flex-1 rounded-lg" onClick={onAdvanceStatus}>
             Order Completed
           </Button>

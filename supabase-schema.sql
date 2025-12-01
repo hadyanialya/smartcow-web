@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS orders (
   buyer_name TEXT NOT NULL,
   quantity INTEGER NOT NULL,
   total_idr DECIMAL(10, 2) NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'packaging', 'shipping', 'delivered', 'completed')),
+  status_updated_at TIMESTAMPTZ,
+  revenue_added BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

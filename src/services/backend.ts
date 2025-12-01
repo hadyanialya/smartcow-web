@@ -50,8 +50,10 @@ type Order = {
   buyerName: string;
   quantity: number;
   totalIdr: number;
-  status: 'pending' | 'processing' | 'completed';
+  status: 'pending' | 'processing' | 'packaging' | 'shipping' | 'delivered' | 'completed';
   createdAt: string;
+  statusUpdatedAt?: string; // Timestamp when status was last updated
+  revenueAdded?: boolean; // Track if revenue was already added for this order
 };
 
 type Overview = {
@@ -192,7 +194,7 @@ export async function createCpProduct(cpId: string, cpName: string, data: Omit<P
   }
   
   // Read current products from local storage (per-seller/compost-processor storage)
-  const list = getCpProducts(cpId);
+  const list = await getCpProducts(cpId);
   
   // Derive role and userId from cpId
   // cpId format: "seller:username" or "compost_processor:username"
@@ -261,7 +263,7 @@ export async function createCpProduct(cpId: string, cpName: string, data: Omit<P
 }
 
 export async function updateCpProduct(cpId: string, id: string, patch: Partial<Product>) {
-  const list = getCpProducts(cpId);
+  const list = await getCpProducts(cpId);
   const updatedProduct = list.find(p => p.id === id);
   if (!updatedProduct) return;
   
@@ -339,7 +341,7 @@ export async function updateCpProduct(cpId: string, id: string, patch: Partial<P
 }
 
 export async function deleteCpProduct(cpId: string, id: string) {
-  const list = getCpProducts(cpId);
+  const list = await getCpProducts(cpId);
   const next = list.filter(p => p.id !== id);
   
   // Delete from Supabase if configured
@@ -543,8 +545,10 @@ export async function getCpOrders(cpId: string): Promise<Order[]> {
           buyerName: o.buyer_name,
           quantity: o.quantity,
           totalIdr: Number(o.total_idr),
-          status: o.status as 'pending' | 'processing' | 'completed',
+          status: o.status as 'pending' | 'processing' | 'packaging' | 'shipping' | 'delivered' | 'completed',
           createdAt: o.created_at,
+          statusUpdatedAt: o.status_updated_at || o.created_at,
+          revenueAdded: o.revenue_added || false,
         }));
       }
     } catch (error) {
@@ -584,8 +588,10 @@ export async function getBuyerOrders(buyerId: string): Promise<Order[]> {
           buyerName: o.buyer_name,
           quantity: o.quantity,
           totalIdr: Number(o.total_idr),
-          status: o.status as 'pending' | 'processing' | 'completed',
+          status: o.status as 'pending' | 'processing' | 'packaging' | 'shipping' | 'delivered' | 'completed',
           createdAt: o.created_at,
+          statusUpdatedAt: o.status_updated_at || o.created_at,
+          revenueAdded: o.revenue_added || false,
         }));
       }
     } catch (error) {
@@ -641,14 +647,46 @@ export async function createOrderForSeller(item: { productId: string; productNam
           buyer_name: item.buyerName,
           quantity: item.quantity,
           total_idr: item.totalIdr,
-          status: 'pending',
+          status: 'packaging', // Try packaging first
           created_at: new Date().toISOString(),
         })
         .select()
         .single();
       
       if (error) {
-        console.error('Error creating order in Supabase:', error);
+        // If packaging fails due to constraint, try with 'pending' instead
+        if (error.code === '23514' && error.message?.includes('orders_status_check')) {
+          console.warn('Status "packaging" not allowed in constraint, using "pending" instead. Please run update-orders-status-constraint.sql in Supabase.');
+          try {
+            const { data: fallbackData, error: fallbackError } = await supabase
+              .from('orders')
+              .insert({
+                product_id: isProductUUID ? item.productId : null,
+                product_name: item.productName,
+                seller_id: item.sellerId,
+                seller_role: sellerRole || null,
+                seller_name: item.sellerName,
+                buyer_id: item.buyerId,
+                buyer_name: item.buyerName,
+                quantity: item.quantity,
+                total_idr: item.totalIdr,
+                status: 'pending', // Fallback to pending
+                created_at: new Date().toISOString(),
+              })
+              .select()
+              .single();
+            
+            if (fallbackError) {
+              console.error('Error creating order in Supabase (fallback):', fallbackError);
+            } else if (fallbackData) {
+              orderId = fallbackData.id;
+            }
+          } catch (fallbackErr) {
+            console.error('Error in fallback order creation:', fallbackErr);
+          }
+        } else {
+          console.error('Error creating order in Supabase:', error);
+        }
         // Continue with localStorage save even if Supabase fails
       } else if (data) {
         orderId = data.id;
@@ -658,6 +696,14 @@ export async function createOrderForSeller(item: { productId: string; productNam
       // Continue with localStorage save even if Supabase fails
     }
   }
+  
+  const now = new Date().toISOString();
+  // Determine order status: if orderId is UUID from Supabase, check if we used fallback
+  // For localStorage, always use 'packaging' to match expected behavior
+  const isSupabaseOrder = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+  // If Supabase insert succeeded, status might be 'pending' (if fallback was used) or 'packaging' (if constraint allows)
+  // We'll check the actual status from Supabase if possible, otherwise default to 'packaging' for localStorage
+  const orderStatus: Order['status'] = 'packaging'; // Default to packaging for localStorage consistency
   
   const order: Order = { 
     id: orderId, 
@@ -670,9 +716,26 @@ export async function createOrderForSeller(item: { productId: string; productNam
     buyerName: item.buyerName, 
     quantity: item.quantity, 
     totalIdr: item.totalIdr, 
-    status: 'pending', 
-    createdAt: new Date().toISOString() 
+    status: orderStatus,
+    createdAt: now,
+    statusUpdatedAt: now
   };
+  
+  // After creating order, try to update to 'packaging' if constraint allows
+  if (isSupabaseConfigured() && orderStatus === 'pending') {
+    try {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+      if (isUUID) {
+        // Try to update to packaging (will fail silently if constraint doesn't allow)
+        await supabase
+          .from('orders')
+          .update({ status: 'packaging' })
+          .eq('id', orderId);
+      }
+    } catch {
+      // Ignore if update fails
+    }
+  }
   
   const list = await getCpOrders(item.sellerId);
   const next = [order, ...list];
@@ -687,9 +750,14 @@ export async function updateOrderStatus(cpId: string, orderId: string, status: O
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
       
       if (isUUID) {
+        // Update status and revenueAdded flag if revenue was added
+        const updateData: any = { status };
+        // Note: revenueAdded will be set after we check if revenue should be added
+        // We'll update it in the next block after revenueAdded is determined
+        
         const { error } = await supabase
           .from('orders')
-          .update({ status })
+          .update(updateData)
           .eq('id', orderId);
         
         if (error) {
@@ -705,6 +773,9 @@ export async function updateOrderStatus(cpId: string, orderId: string, status: O
   let orderFound = false;
   let revenueAdded = false;
   
+  console.log(`🔄 updateOrderStatus: cpId=${cpId}, orderId=${orderId}, status=${status}`);
+  console.log(`📦 Found ${list.length} orders for ${cpId}`);
+  
   const next = list.map(o => {
     if (o.id !== orderId) return o;
     orderFound = true;
@@ -713,15 +784,25 @@ export async function updateOrderStatus(cpId: string, orderId: string, status: O
     const wasCompleted = o.status === 'completed';
     const updated = { ...o, status } as Order;
     
-    if (!wasCompleted && status === 'completed') {
+    console.log(`📋 Order found: id=${o.id}, currentStatus=${o.status}, newStatus=${status}, wasCompleted=${wasCompleted}`);
+    console.log(`📋 Order details: sellerId=${o.sellerId}, sellerRole=${o.sellerRole}, totalIdr=${o.totalIdr}`);
+    
+    // Add revenue when transitioning from non-completed to completed
+    // OR if order is already completed but revenue hasn't been added yet
+    if (status === 'completed') {
       // Ensure this order belongs to the cpId (seller/processor) making the update
-      // This prevents revenue from going to the wrong account
       if (o.sellerId !== cpId) {
-        console.warn(`Order ${orderId} sellerId (${o.sellerId}) does not match cpId (${cpId})`);
+        console.warn(`⚠️ Order ${orderId} sellerId (${o.sellerId}) does not match cpId (${cpId})`);
         return updated; // Don't add revenue if order doesn't belong to this seller/processor
       }
       
-      // determine role and userId from the order's sellerId
+      // Check if revenue was already added for this order
+      if (o.revenueAdded) {
+        console.log(`ℹ️ Revenue already added for order ${orderId}. Skipping.`);
+        return updated;
+      }
+      
+      // Determine role and userId from the order's sellerId
       const sellerId = o.sellerId;
       const sellerRole = o.sellerRole || (sellerId && sellerId.startsWith('seller:') ? 'seller' : sellerId && sellerId.startsWith('compost_processor:') ? 'compostProcessor' : undefined);
       
@@ -733,11 +814,24 @@ export async function updateOrderStatus(cpId: string, orderId: string, status: O
         userId = sellerId;
       }
       
-      if (sellerRole && userId && o.totalIdr > 0) {
+      console.log(`🔍 Extracted: sellerId=${sellerId}, sellerRole=${sellerRole}, userId=${userId}, totalIdr=${o.totalIdr}`);
+      
+      // Add revenue if:
+      // 1. Order is transitioning from non-completed to completed (normal case)
+      // 2. OR order is already completed but revenueAdded flag is not set (recovery case)
+      const shouldAddRevenue = !wasCompleted || (wasCompleted && !o.revenueAdded);
+      
+      if (shouldAddRevenue && sellerRole && userId && o.totalIdr > 0) {
+        console.log(`💵 Adding revenue: sellerRole=${sellerRole}, userId=${userId}, totalIdr=${o.totalIdr}, sellerId=${sellerId}`);
         addRevenueForUser(sellerRole, userId, o.totalIdr);
         revenueAdded = true;
+        // Mark that revenue was added for this order
+        updated.revenueAdded = true;
+        console.log(`✅ Revenue added successfully!`);
+      } else if (!shouldAddRevenue) {
+        console.log(`ℹ️ Revenue already processed for this order. Skipping.`);
       } else {
-        console.warn(`Cannot add revenue: sellerRole=${sellerRole}, userId=${userId}, totalIdr=${o.totalIdr}, sellerId=${sellerId}`);
+        console.warn(`❌ Cannot add revenue: sellerRole=${sellerRole}, userId=${userId}, totalIdr=${o.totalIdr}, sellerId=${sellerId}`);
       }
     }
     return updated;
@@ -748,12 +842,100 @@ export async function updateOrderStatus(cpId: string, orderId: string, status: O
     return; // Don't save if order not found
   }
   
-  saveCpOrders(cpId, next);
+  // Update statusUpdatedAt and revenueAdded when status changes
+  const updatedNext = next.map(o => {
+    if (o.id === orderId) {
+      const changes: Partial<Order> = {};
+      if (o.status !== status) {
+        changes.statusUpdatedAt = new Date().toISOString();
+      }
+      // If revenue was added, mark it in the order
+      if (revenueAdded) {
+        changes.revenueAdded = true;
+      }
+      return { ...o, ...changes };
+    }
+    return o;
+  });
+  
+  saveCpOrders(cpId, updatedNext);
+  
+  // Update revenueAdded flag in Supabase if revenue was added
+  if (revenueAdded && isSupabaseConfigured()) {
+    try {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+      if (isUUID) {
+        await supabase
+          .from('orders')
+          .update({ revenue_added: true })
+          .eq('id', orderId);
+      }
+    } catch (error) {
+      console.error('Error updating revenue_added flag in Supabase:', error);
+    }
+  }
   
   if (revenueAdded) {
     // Trigger a custom event to notify UI of revenue update
     try {
       window.dispatchEvent(new CustomEvent('smartcow_revenue_updated', { detail: { cpId } } as any));
+    } catch {}
+  }
+}
+
+// Auto-update order status based on time elapsed
+export async function autoUpdateOrderStatuses() {
+  const allOrders: Order[] = [];
+  
+  // Get all orders from all sellers/processors
+  try {
+    // Get all keys from localStorage that match order pattern
+    const keys = Object.keys(localStorage);
+    const orderKeys = keys.filter(key => key.startsWith(CP_ORDERS_PREFIX));
+    
+    for (const key of orderKeys) {
+      const orders = safeRead<Order[]>(key, []);
+      allOrders.push(...orders);
+    }
+  } catch (error) {
+    console.error('Error fetching orders for auto-update:', error);
+    return;
+  }
+  
+  const now = new Date().getTime();
+  const FIVE_MINUTES = 5 * 60 * 1000; // 5 minutes in milliseconds
+  let updated = false;
+  
+  for (const order of allOrders) {
+    if (!order.statusUpdatedAt) {
+      // If no statusUpdatedAt, use createdAt
+      order.statusUpdatedAt = order.createdAt;
+    }
+    
+    const statusUpdatedTime = new Date(order.statusUpdatedAt).getTime();
+    const timeElapsed = now - statusUpdatedTime;
+    
+    let newStatus: Order['status'] | null = null;
+    
+    if (order.status === 'packaging' && timeElapsed >= FIVE_MINUTES) {
+      newStatus = 'shipping';
+    } else if (order.status === 'shipping' && timeElapsed >= FIVE_MINUTES) {
+      newStatus = 'delivered';
+    }
+    
+    if (newStatus) {
+      // Update order status
+      const cpId = order.sellerId;
+      await updateOrderStatus(cpId, order.id, newStatus);
+      updated = true;
+      console.log(`🔄 Auto-updated order ${order.id} from ${order.status} to ${newStatus}`);
+    }
+  }
+  
+  if (updated) {
+    // Trigger event to refresh UI
+    try {
+      window.dispatchEvent(new CustomEvent('smartcow_orders_updated'));
     } catch {}
   }
 }
@@ -768,6 +950,7 @@ export function addRevenueForUser(role: 'seller' | 'compostProcessor', userId: s
     const current = safeRead<number>(key, 0);
     const newTotal = current + amount;
     safeWrite(key, newTotal);
+    console.log(`💰 Revenue added: ${amount} for ${role}:${userId}. New total: ${newTotal}. Key: ${key}`);
   } catch (error) {
     console.error('Error adding revenue:', error);
   }
@@ -776,7 +959,9 @@ export function addRevenueForUser(role: 'seller' | 'compostProcessor', userId: s
 export function getRevenueForUser(role: 'seller' | 'compostProcessor', userId: string) {
   try {
     const key = `${REVENUE_PREFIX}${role}:${userId}`;
-    return safeRead<number>(key, 0);
+    const revenue = safeRead<number>(key, 0);
+    console.log(`📊 Getting revenue for ${role}:${userId}. Key: ${key}, Revenue: ${revenue}`);
+    return revenue;
   } catch { return 0; }
 }
 
@@ -797,9 +982,9 @@ export function sendSystemMessage(toId: string, fromId: string, text: string) {
   sendMessage(from, to, text);
 }
 
-export function getOverview(cpId: string): Overview {
-  const products = getCpProducts(cpId);
-  const orders = getCpOrders(cpId);
+export async function getOverview(cpId: string): Promise<Overview> {
+  const products = await getCpProducts(cpId);
+  const orders = await getCpOrders(cpId);
   const articles = getCpArticles(cpId);
   const msgs = safeRead<ChatMessage[]>(CHAT_MESSAGES_KEY, []);
   const inquiries = msgs.filter(m => m.toId === cpId).length;
@@ -808,7 +993,31 @@ export function getOverview(cpId: string): Overview {
   const [rolePart, ...rest] = cpId.split(':');
   const role = rolePart === 'seller' ? 'seller' : rolePart === 'compost_processor' ? 'compostProcessor' : undefined;
   const userId = rest.join(':') || cpId;
-  const totalSalesIdr = role ? getRevenueForUser(role, userId) : orders.filter(o => o.status === 'completed').reduce((t, o) => t + o.totalIdr, 0);
+  console.log(`🔍 getOverview for cpId: ${cpId}, role: ${role}, userId: ${userId}`);
+  let totalSalesIdr = 0;
+  if (role) {
+    totalSalesIdr = getRevenueForUser(role, userId);
+    console.log(`💰 Revenue from getRevenueForUser: ${totalSalesIdr}`);
+    
+    // If revenue is 0 or missing, OR if revenue is less than sum of completed orders,
+    // calculate from completed orders and sync it (handles cases where revenue wasn't added)
+    const calculatedRevenue = orders.filter(o => o.status === 'completed' || o.status === 'delivered').reduce((t, o) => t + o.totalIdr, 0);
+    if (totalSalesIdr === 0 || totalSalesIdr < calculatedRevenue) {
+      console.log(`💰 Revenue mismatch detected. Current: ${totalSalesIdr}, Calculated from completed orders: ${calculatedRevenue}`);
+      if (calculatedRevenue > 0) {
+        // Sync the calculated revenue to localStorage
+        const key = `${REVENUE_PREFIX}${role}:${userId}`;
+        safeWrite(key, calculatedRevenue);
+        console.log(`💰 Synced revenue to localStorage: ${calculatedRevenue}`);
+        totalSalesIdr = calculatedRevenue;
+      }
+    }
+  } else {
+    // Fallback: calculate from completed orders
+    totalSalesIdr = orders.filter(o => o.status === 'completed').reduce((t, o) => t + o.totalIdr, 0);
+    console.log(`💰 Revenue from completed orders: ${totalSalesIdr}`);
+  }
+  console.log(`💰 Total revenue calculated: ${totalSalesIdr}`);
   return { totalProducts: products.length, totalSalesIdr, educationalPosts: articles.length, inquiries };
 }
 

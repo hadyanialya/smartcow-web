@@ -133,12 +133,60 @@ export default function AdminDashboard() {
   const refreshPendingArticles = () => { try { const saved = localStorage.getItem(PENDING_ARTICLES_KEY); setPendingArticles(saved ? JSON.parse(saved) : []); } catch { setPendingArticles([]); } };
 
   const onCreateUser = () => { const res = createUserByAdmin(creating.name, creating.email, creating.password, creating.role as any); if (!res.success) return; setCreating({ name: "", email: "", password: "", role: "farmer" }); refreshUsers(); };
-  const approveUser = (id: string) => { setStatusById(id, 'active'); refreshUsers(); };
-  const rejectUser = (id: string) => { setStatusById(id, 'banned'); refreshUsers(); };
-  const banUser = (id: string) => { setStatusById(id, 'banned'); refreshUsers(); };
-  const unbanUser = (id: string) => { setStatusById(id, 'active'); refreshUsers(); };
-  const suspendUser = (id: string) => { setStatusById(id, 'suspended'); refreshUsers(); };
-  const reactivateUser = (id: string) => { setStatusById(id, 'active'); refreshUsers(); };
+  const approveUser = async (id: string) => { 
+    const result = await setStatusById(id, 'active');
+    if (result.success) {
+      toast.success('User approved');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to approve user');
+    }
+  };
+  const rejectUser = async (id: string) => { 
+    const result = await setStatusById(id, 'banned');
+    if (result.success) {
+      toast.success('User banned');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to ban user');
+    }
+  };
+  const banUser = async (id: string) => { 
+    const result = await setStatusById(id, 'banned');
+    if (result.success) {
+      toast.success('User banned');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to ban user');
+    }
+  };
+  const unbanUser = async (id: string) => { 
+    const result = await setStatusById(id, 'active');
+    if (result.success) {
+      toast.success('User unbanned');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to unban user');
+    }
+  };
+  const suspendUser = async (id: string) => { 
+    const result = await setStatusById(id, 'suspended');
+    if (result.success) {
+      toast.success('User suspended');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to suspend user');
+    }
+  };
+  const reactivateUser = async (id: string) => { 
+    const result = await setStatusById(id, 'active');
+    if (result.success) {
+      toast.success('User reactivated');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to reactivate user');
+    }
+  };
   const startResetPassword = (id: string) => {
     const user = users.find(u => u.id === id);
     setResettingPasswordFor({
@@ -148,12 +196,12 @@ export default function AdminDashboard() {
     });
   };
 
-  const handleResetPassword = () => {
+  const handleResetPassword = async () => {
     if (!resettingPasswordFor || !resettingPasswordFor.newPassword.trim()) {
       toast.error('Password cannot be empty');
       return;
     }
-    const result = resetPasswordById(resettingPasswordFor.userId, resettingPasswordFor.newPassword.trim());
+    const result = await resetPasswordById(resettingPasswordFor.userId, resettingPasswordFor.newPassword.trim());
     if (result.success) {
       toast.success(`Password reset successful!`, {
         description: (
@@ -175,9 +223,33 @@ export default function AdminDashboard() {
   const cancelResetPassword = () => {
     setResettingPasswordFor(null);
   };
-  const softDelete = (u: UserData) => { deleteAccountByNameRole(u.name, u.role); refreshUsers(); };
-  const restore = (id: string) => { restoreAccountById(id); refreshUsers(); };
-  const changeRole = (id: string, role: string) => { changeRoleById(id, role as any); refreshUsers(); };
+  const softDelete = async (u: UserData) => { 
+    const result = await deleteAccountByNameRole(u.name, u.role);
+    if (result.success) {
+      toast.success('Account deleted');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to delete account');
+    }
+  };
+  const restore = async (id: string) => { 
+    const result = await restoreAccountById(id);
+    if (result.success) {
+      toast.success('Account restored');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to restore account');
+    }
+  };
+  const changeRole = async (id: string, role: string) => { 
+    const result = await changeRoleById(id, role as any);
+    if (result.success) {
+      toast.success('Role updated');
+      refreshUsers();
+    } else {
+      toast.error(result.message || 'Failed to update role');
+    }
+  };
 
   const approveArticle = async (article: any, reviewMessage?: string) => {
     // Delete from Supabase if configured
@@ -545,13 +617,6 @@ export default function AdminDashboard() {
                   </div>
                 </Card>
 
-                <Card className="p-4 border-purple-200">
-                  <h4 className="text-gray-900 mb-4">User Activity</h4>
-                  <div className="space-y-3">
-                    <ActivityLog type="info" message={`Pending users: ${users.filter(u => u.status==='pending').length}`} time={new Date().toLocaleTimeString()} />
-                    <ActivityLog type="info" message={`Banned users: ${users.filter(u => u.status==='banned').length}`} time={new Date().toLocaleTimeString()} />
-                  </div>
-                </Card>
                 <Card className="p-4 border-purple-200">
                   <h4 className="text-gray-900 mb-4">Robot Activity History</h4>
                   <div className="space-y-3">
