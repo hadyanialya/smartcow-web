@@ -16,21 +16,24 @@ import {
 } from '../utils/auth';
 import { 
   loadSettings,
+  loadSettingsSync,
   saveSettings,
   UserSettings,
 } from '../utils/settings';
 
 export default function Settings() {
-  const { userRole, userName } = useAuth();
-  const userId = `${userRole}:${userName || 'anonymous'}`;
-  const [settings, setSettings] = useState<UserSettings>(() => loadSettings(userId, userRole));
-  const [name, setName] = useState(settings.profile.fullName);
-  const [username, setUsername] = useState(settings.profile.username);
-  const [email, setEmail] = useState(settings.profile.email);
-  const [phone, setPhone] = useState(settings.profile.phone || '');
-  const [address, setAddress] = useState(settings.profile.address || '');
-  const [profilePic, setProfilePic] = useState<string | null>(settings.profile.profilePicture || null);
-  const [roleLabelVisible, setRoleLabelVisible] = useState(!!settings.profile.showRoleLabel);
+  const { userRole, userName, userId: authUserId, updateUserName } = useAuth();
+  const settingsUserId = `${userRole}:${userName || 'anonymous'}`;
+  const defaultSettings = loadSettingsSync(settingsUserId, userRole);
+  const [settings, setSettings] = useState<UserSettings>(defaultSettings);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [name, setName] = useState(defaultSettings.profile.fullName);
+  const [username, setUsername] = useState(defaultSettings.profile.username);
+  const [email, setEmail] = useState(defaultSettings.profile.email);
+  const [phone, setPhone] = useState(defaultSettings.profile.phone || '');
+  const [address, setAddress] = useState(defaultSettings.profile.address || '');
+  const [profilePic, setProfilePic] = useState<string | null>(defaultSettings.profile.profilePicture || null);
+  const [roleLabelVisible, setRoleLabelVisible] = useState(!!defaultSettings.profile.showRoleLabel);
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -42,20 +45,105 @@ export default function Settings() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   useEffect(() => {
-    setSettings(loadSettings(userId, userRole));
-  }, [userId, userRole]);
+    const loadUserSettings = async () => {
+      setSettingsLoading(true);
+      
+      // If userId is undefined, try to sync it from Supabase
+      if (!authUserId && userName && userRole && userRole !== 'admin') {
+        console.log('🔄 authUserId is undefined, attempting to sync from Supabase...');
+        try {
+          const { findUserByNameRole } = await import('../utils/auth');
+          const user = findUserByNameRole(userName, userRole);
+          if (user && user.id && user.id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+            // Valid UUID found, update auth context
+            console.log('✅ Found valid userId, updating auth context:', user.id);
+            if (updateUserName) {
+              // Use a workaround to update userId - we'll need to add updateUserId to auth context
+              // For now, we'll just log it and the user will need to logout/login
+              console.log('⚠️ Please logout and login again to sync your userId');
+            }
+          } else {
+            // Try to find in Supabase
+            const { supabase } = await import('../lib/supabase');
+            const { data: supabaseUser } = await supabase
+              .from('users')
+              .select('id, name, role, email')
+              .eq('name', userName)
+              .eq('role', userRole)
+              .is('deleted_at', null)
+              .maybeSingle();
+            
+            if (supabaseUser) {
+              console.log('✅ Found user in Supabase, ID:', supabaseUser.id);
+              console.log('⚠️ Please logout and login again to sync your userId');
+            } else {
+              console.log('⚠️ User not found in Supabase. Please logout and login again.');
+            }
+          }
+        } catch (syncError) {
+          console.error('❌ Error syncing userId:', syncError);
+        }
+      }
+      
+      try {
+        const loadedSettings = await loadSettings(settingsUserId, userRole);
+        setSettings(loadedSettings);
+        // Update form fields when settings are loaded
+        setName(loadedSettings.profile.fullName);
+        setUsername(loadedSettings.profile.username);
+        setEmail(loadedSettings.profile.email);
+        setPhone(loadedSettings.profile.phone || '');
+        setAddress(loadedSettings.profile.address || '');
+        setProfilePic(loadedSettings.profile.profilePicture || null);
+        setRoleLabelVisible(!!loadedSettings.profile.showRoleLabel);
+      } catch (error) {
+        console.error('Error loading settings:', error);
+        // Fallback to sync version
+        const fallbackSettings = loadSettingsSync(settingsUserId, userRole);
+        setSettings(fallbackSettings);
+      } finally {
+        setSettingsLoading(false);
+      }
+    };
+    loadUserSettings();
+  }, [settingsUserId, userRole, authUserId, userName, updateUserName]);
 
-  const onSaveProfile = () => {
+  const onSaveProfile = async () => {
+    if (!userName || !userRole) {
+      setProfileMessage('Please login first.');
+      return;
+    }
+    
+    console.log('💾 Saving profile:', { currentUserName: userName, newUsername: username, role: userRole });
+    
     const excludeId = findUserByNameRole(userName, userRole)?.id || undefined;
     if (isUsernameTaken(username, excludeId)) {
       setProfileMessage('Username already exists. Please choose another one.');
       return;
     }
-    const res = updateUserProfileByNameRole(userName, userRole, { name: username, email });
+    
+    // Use current userName to find user, then update to new username
+    // Pass authUserId (database ID) if available for more reliable lookup
+    console.log('🔍 Update profile params:', { 
+      currentName: userName, 
+      newName: username, 
+      role: userRole, 
+      authUserId: authUserId || 'undefined - will search by name/role' 
+    });
+    const res = await updateUserProfileByNameRole(userName, userRole, { name: username, email }, authUserId);
     if (!res.success) {
+      console.error('❌ Profile update failed:', res.message);
       setProfileMessage(res.message);
       return;
     }
+    
+    console.log('✅ Profile updated successfully:', res.user);
+    
+    // Update auth context if name changed
+    if (username !== userName && updateUserName) {
+      updateUserName(username);
+    }
+    
     const next: UserSettings = {
       ...settings,
       profile: {
@@ -68,7 +156,7 @@ export default function Settings() {
         showRoleLabel: roleLabelVisible,
       },
     };
-    saveSettings(userId, next);
+    await saveSettings(settingsUserId, next, userRole);
     setSettings(next);
     setProfileMessage('Profile updated successfully');
   };
@@ -90,10 +178,10 @@ export default function Settings() {
     }
   };
 
-  const onToggleDarkMode = (value: boolean) => {
+  const onToggleDarkMode = async (value: boolean) => {
     const next = { ...settings, darkMode: value };
     setSettings(next);
-    saveSettings(userId, next);
+    await saveSettings(settingsUserId, next, userRole);
     document.documentElement.classList.toggle('dark', value);
   };
 

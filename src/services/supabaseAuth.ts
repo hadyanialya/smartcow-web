@@ -52,7 +52,7 @@ export async function getUsers(includeDeleted = false): Promise<UserData[]> {
   }
 }
 
-// Get admin account (always available)
+// Get admin account
 export function getAdminAccount(): UserData {
   return {
     id: '00000000-0000-0000-0000-000000000001',
@@ -62,7 +62,6 @@ export function getAdminAccount(): UserData {
     role: 'admin',
     createdAt: new Date('2025-01-01').toISOString(),
     status: 'active',
-    lastLogin: undefined,
     deletedAt: null,
   };
 }
@@ -76,27 +75,35 @@ export async function registerUser(
 ): Promise<{ success: boolean; message: string; user?: UserData }> {
   try {
     // Check if email already exists
-    const { data: existing, error: checkError } = await supabase
+    const { data: existingEmail } = await supabase
       .from('users')
       .select('id')
-      .eq('email', email)
+      .eq('email', email.toLowerCase())
       .is('deleted_at', null)
-      .maybeSingle(); // Use maybeSingle instead of single to handle no results
+      .maybeSingle();
     
-    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows returned
-      console.error('Error checking existing user:', checkError);
-    }
-    
-    if (existing) {
+    if (existingEmail) {
       return { success: false, message: 'Email already registered' };
     }
     
-    // Create user in Supabase
+    // Check if name already exists for this role
+    const { data: existingName } = await supabase
+      .from('users')
+      .select('id')
+      .eq('name', name)
+      .eq('role', role)
+      .is('deleted_at', null)
+      .maybeSingle();
+    
+    if (existingName) {
+      return { success: false, message: 'Username already taken for this role' };
+    }
+    
     const { data, error } = await supabase
       .from('users')
       .insert({
         name,
-        email,
+        email: email.toLowerCase(),
         password, // TODO: Hash password properly in production
         role,
         status: 'active',
@@ -107,25 +114,15 @@ export async function registerUser(
     
     if (error) {
       console.error('❌ Error registering user:', error);
-      console.error('❌ Error details:', {
-        message: error.message,
-        code: error.code,
-        details: error.details,
-        hint: error.hint
-      });
+      console.error('❌ Error details:', { name, email, role, error });
       return { success: false, message: error.message || 'Failed to register user' };
     }
     
-    console.log('✅ User registered successfully:', data);
-    
-    const user = supabaseToUserData(data);
-    
-    // Send notification
-    pushNotification(user.id, 'Welcome!', `Welcome to Smart Cow, ${name}!`);
-    
-    return { success: true, message: 'Registration successful', user };
+    const newUser = supabaseToUserData(data);
+    console.log('✅ User registered successfully:', newUser.name);
+    return { success: true, message: 'Registration successful!', user: newUser };
   } catch (error: any) {
-    console.error('Error in registerUser:', error);
+    console.error('❌ Error in registerUser:', error);
     return { success: false, message: error.message || 'Registration failed' };
   }
 }
@@ -136,26 +133,37 @@ export async function loginUser(
   password: string
 ): Promise<{ success: boolean; message: string; user?: UserData }> {
   try {
-    // Find user by email
+    // Check admin first
+    const admin = getAdminAccount();
+    if (admin.email.toLowerCase() === email.toLowerCase() && admin.password === password) {
+      return { success: true, message: 'Login successful!', user: admin };
+    }
+    
     const { data, error } = await supabase
       .from('users')
       .select('*')
-      .eq('email', email)
+      .eq('email', email.toLowerCase())
       .is('deleted_at', null)
-      .single();
+      .maybeSingle();
     
     if (error || !data) {
-      return { success: false, message: 'Invalid email or password' };
+      return { success: false, message: 'Email atau password salah.' };
     }
     
-    // Check password (TODO: Use proper password hashing in production)
     if (data.password !== password) {
-      return { success: false, message: 'Invalid email or password' };
+      return { success: false, message: 'Email atau password salah.' };
     }
     
-    // Check status
-    if (data.status !== 'active') {
-      return { success: false, message: `Account is ${data.status}` };
+    if (data.deleted_at) {
+      return { success: false, message: 'Akun ini telah dihapus sementara.' };
+    }
+    
+    if (data.status === 'banned') {
+      return { success: false, message: 'Akun diblokir.' };
+    }
+    
+    if (data.status === 'suspended') {
+      return { success: false, message: 'Akun ditangguhkan sementara.' };
     }
     
     // Update last login
@@ -165,8 +173,7 @@ export async function loginUser(
       .eq('id', data.id);
     
     const user = supabaseToUserData(data);
-    
-    return { success: true, message: 'Login successful', user };
+    return { success: true, message: 'Login berhasil!', user };
   } catch (error: any) {
     console.error('Error in loginUser:', error);
     return { success: false, message: error.message || 'Login failed' };
@@ -184,24 +191,258 @@ export async function createUserByAdmin(
 }
 
 // Search users
-export async function searchUsers(query: string): Promise<UserData[]> {
+export async function searchUsers(
+  query: string,
+  roleFilter?: UserRole,
+  statusFilter?: 'active' | 'pending' | 'banned' | 'suspended',
+  usersList?: UserData[]
+): Promise<UserData[]> {
   try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .is('deleted_at', null)
-      .or(`name.ilike.%${query}%,email.ilike.%${query}%`)
-      .order('created_at', { ascending: false });
+    let users: UserData[];
     
-    if (error) {
-      console.error('Error searching users:', error);
-      return [];
+    if (usersList) {
+      users = usersList;
+    } else {
+      users = await getUsers(true);
     }
     
-    return (data || []).map(supabaseToUserData);
+    let filtered = users.filter(u => {
+      const matchesQuery = !query || 
+        u.name.toLowerCase().includes(query.toLowerCase()) ||
+        u.email.toLowerCase().includes(query.toLowerCase());
+      const matchesRole = !roleFilter || u.role === roleFilter;
+      const matchesStatus = !statusFilter || u.status === statusFilter;
+      return matchesQuery && matchesRole && matchesStatus;
+    });
+    
+    return filtered;
   } catch (error) {
     console.error('Error in searchUsers:', error);
     return [];
+  }
+}
+
+// Update user profile by name and role (or by ID if provided)
+export async function updateUserProfileByNameRole(
+  name: string,
+  role: UserRole,
+  patch: Partial<Pick<UserData, 'name' | 'email'>>,
+  userId?: string
+): Promise<{ success: boolean; message: string; user?: UserData }> {
+  try {
+    console.log('🔍 Searching for user:', { name, role, userId });
+    
+    let userData: any = null;
+    
+    // If userId is provided, use it directly (more reliable)
+    if (userId) {
+      const { data, error: findError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (findError) {
+        console.error('❌ Error finding user by ID:', findError);
+        // Fallback to name/role search
+      } else if (data) {
+        userData = data;
+        console.log('✅ User found by ID:', { id: userData.id, name: userData.name, role: userData.role });
+      }
+    }
+    
+    // If not found by ID, try by name and role
+    if (!userData) {
+      const { data, error: findError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('name', name)
+        .eq('role', role)
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (findError) {
+        console.error('❌ Error finding user:', findError);
+        console.error('❌ Error details:', { name, role, error: findError });
+        return { success: false, message: `Error finding user: ${findError.message}` };
+      }
+      
+      if (!data) {
+        console.error('❌ User not found in Supabase:', { name, role });
+        // Try to get all users to see what's in the database
+        const { data: allUsers } = await supabase
+          .from('users')
+          .select('name, role, email')
+          .is('deleted_at', null)
+          .limit(10);
+        console.log('📋 Available users in database:', allUsers);
+        
+        // Try to find user by email from localStorage (if user exists in localStorage but not in Supabase)
+        // This handles migration case where user was created before Supabase migration
+        console.log('🔄 Attempting to sync user from localStorage...');
+        try {
+          const localStorageUsers = JSON.parse(localStorage.getItem('smartcow_users') || '[]');
+          console.log('📦 localStorage users:', localStorageUsers.length, 'users found');
+          const localUser = localStorageUsers.find((u: any) => {
+            const nameMatch = u.name && u.name.trim().toLowerCase() === name.trim().toLowerCase();
+            const roleMatch = u.role === role;
+            return nameMatch && roleMatch;
+          });
+          console.log('🔍 Looking for user:', { name, role, found: !!localUser });
+          if (localUser && localUser.email && localUser.password) {
+            console.log('📦 Found user in localStorage, attempting to register in Supabase:', { name, email: localUser.email, role });
+            // Try to register user in Supabase (this will create the user if it doesn't exist)
+            const registerResult = await registerUser(localUser.name, localUser.email, localUser.password, localUser.role);
+            let syncedUserData: any = null;
+            
+            if (registerResult.success && registerResult.user) {
+              console.log('✅ User synced to Supabase, ID:', registerResult.user.id);
+              // Get the full user data from Supabase
+              const { data: fullUserData } = await supabase
+                .from('users')
+                .select('*')
+                .eq('id', registerResult.user.id)
+                .maybeSingle();
+              if (fullUserData) {
+                syncedUserData = fullUserData;
+              }
+            } else {
+              console.error('❌ Failed to sync user to Supabase:', registerResult.message);
+              // If email already exists, try to find by email instead
+              if (registerResult.message.includes('already') || registerResult.message.includes('Email')) {
+                const { data: existingUser } = await supabase
+                  .from('users')
+                  .select('*')
+                  .eq('email', localUser.email.toLowerCase())
+                  .is('deleted_at', null)
+                  .maybeSingle();
+                if (existingUser) {
+                  console.log('✅ Found existing user by email, ID:', existingUser.id);
+                  syncedUserData = existingUser;
+                }
+              }
+            }
+            
+            // If we found/synced the user, proceed with update
+            if (syncedUserData) {
+              // Check for conflicts
+              if (patch.name && patch.name !== name) {
+                const { data: nameConflict } = await supabase
+                  .from('users')
+                  .select('id')
+                  .eq('name', patch.name)
+                  .eq('role', role)
+                  .neq('id', syncedUserData.id)
+                  .is('deleted_at', null)
+                  .maybeSingle();
+                
+                if (nameConflict) {
+                  return { success: false, message: 'Username already taken for this role.' };
+                }
+              }
+              
+              if (patch.email && patch.email.toLowerCase() !== syncedUserData.email.toLowerCase()) {
+                const { data: emailConflict } = await supabase
+                  .from('users')
+                  .select('id')
+                  .eq('email', patch.email.toLowerCase())
+                  .neq('id', syncedUserData.id)
+                  .is('deleted_at', null)
+                  .maybeSingle();
+                
+                if (emailConflict) {
+                  return { success: false, message: 'Email already registered.' };
+                }
+              }
+              
+              // Update user
+              const updateData: any = {};
+              if (patch.name) updateData.name = patch.name;
+              if (patch.email) updateData.email = patch.email.toLowerCase();
+              
+              const { data: updated, error: updateError } = await supabase
+                .from('users')
+                .update(updateData)
+                .eq('id', syncedUserData.id)
+                .select()
+                .single();
+              
+              if (updateError) {
+                console.error('Error updating synced user:', updateError);
+                return { success: false, message: 'Failed to update profile.' };
+              }
+              
+              const updatedUser = supabaseToUserData(updated);
+              console.log('✅ Profile updated successfully after sync');
+              return { success: true, message: 'Profile updated successfully.', user: updatedUser };
+            }
+          } else {
+            console.log('⚠️ User not found in localStorage or missing email/password');
+          }
+        } catch (syncError) {
+          console.error('❌ Error syncing user from localStorage:', syncError);
+        }
+        
+        return { success: false, message: 'User not found. Please logout and login again to sync your account, or contact support.' };
+      }
+      
+      userData = data;
+      console.log('✅ User found by name/role:', { id: userData.id, name: userData.name, role: userData.role });
+    }
+    
+    // Check if new name/email conflicts with existing users
+    if (patch.name && patch.name !== name) {
+      const { data: nameConflict } = await supabase
+        .from('users')
+        .select('id')
+        .eq('name', patch.name)
+        .eq('role', role)
+        .neq('id', userData.id)
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (nameConflict) {
+        return { success: false, message: 'Username already taken for this role.' };
+      }
+    }
+    
+    if (patch.email && patch.email.toLowerCase() !== userData.email.toLowerCase()) {
+      const { data: emailConflict } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', patch.email.toLowerCase())
+        .neq('id', userData.id)
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (emailConflict) {
+        return { success: false, message: 'Email already registered.' };
+      }
+    }
+    
+    // Update user
+    const updateData: any = {};
+    if (patch.name) updateData.name = patch.name;
+    if (patch.email) updateData.email = patch.email.toLowerCase();
+    
+    const { data: updated, error: updateError } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('id', userData.id)
+      .select()
+      .single();
+    
+    if (updateError) {
+      console.error('Error updating profile:', updateError);
+      return { success: false, message: 'Failed to update profile.' };
+    }
+    
+    const updatedUser = supabaseToUserData(updated);
+    return { success: true, message: 'Profile updated successfully.', user: updatedUser };
+  } catch (error: any) {
+    console.error('Error in updateUserProfileByNameRole:', error);
+    return { success: false, message: error.message || 'Failed to update profile.' };
   }
 }
 
@@ -324,7 +565,7 @@ export async function updatePasswordByNameRole(
       .eq('name', name)
       .eq('role', role)
       .is('deleted_at', null)
-      .single();
+      .maybeSingle();
     
     if (findError || !data) {
       return { success: false, message: 'User not found' };
@@ -352,4 +593,3 @@ export async function updatePasswordByNameRole(
     return { success: false, message: error.message || 'Failed to update password' };
   }
 }
-

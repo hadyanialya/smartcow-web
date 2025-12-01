@@ -38,19 +38,45 @@ export default function BuyerDashboard() {
   const [messagesCount, setMessagesCount] = useState(0);
 
   useEffect(() => {
-    const refreshData = () => {
-      // Get buyer orders
-      const buyerOrders = getBuyerOrders(userId);
-      setOrders(buyerOrders);
+    const refreshData = async () => {
+      try {
+        // Get buyer orders
+        const buyerOrders = await getBuyerOrders(userId);
+        setOrders(buyerOrders);
 
-      // Get saved products
-      const likedIds = getLikedProducts(userId);
-      setSavedProductIds(likedIds);
-      
-      // Get product details for saved items
-      const allProducts = getMarketplaceProducts();
-      const saved = allProducts.filter(p => likedIds.includes(p.id));
-      setSavedProducts(saved);
+        // Get saved products
+        const likedIds = getLikedProducts(userId);
+        setSavedProductIds(likedIds);
+        
+        // Get product details for saved items
+        const allProducts = await getMarketplaceProducts();
+        const saved = allProducts.filter(p => likedIds.includes(p.id));
+        setSavedProducts(saved);
+      } catch (error) {
+        console.error('Error refreshing buyer data:', error);
+        // Fallback to localStorage
+        try {
+          const allOrders: any[] = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('smartcow_cp_orders:')) {
+              const orders = JSON.parse(localStorage.getItem(key) || '[]');
+              const buyerOrders = orders.filter((o: any) => o.buyerId === userId);
+              allOrders.push(...buyerOrders);
+            }
+          }
+          setOrders(allOrders);
+          
+          const marketplaceJson = localStorage.getItem('smartcow_marketplace_products');
+          if (marketplaceJson) {
+            const allProducts = JSON.parse(marketplaceJson);
+            const likedIds = getLikedProducts(userId);
+            setSavedProductIds(likedIds);
+            const saved = allProducts.filter((p: any) => likedIds.includes(p.id));
+            setSavedProducts(saved);
+          }
+        } catch {}
+      }
 
       // Count unread messages (simplified - you can enhance this)
       // For now, we'll just show a placeholder count

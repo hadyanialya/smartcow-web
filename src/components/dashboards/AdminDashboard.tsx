@@ -34,7 +34,8 @@ const ROBOT_ACTIVITY_KEY = "smartcow_robot_activity";
 const CONTENT_REVIEWS_KEY = "smartcow_content_reviews";
 
 export default function AdminDashboard() {
-  const [users, setUsers] = useState<UserData[]>(() => getUsers());
+  const [users, setUsers] = useState<UserData[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterRole, setFilterRole] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
@@ -44,12 +45,11 @@ export default function AdminDashboard() {
   const filteredUsers = useMemo(() => {
     const roleFilter = filterRole === 'all' ? undefined : (filterRole as any);
     const statusFilter = filterStatus === 'all' ? undefined : (filterStatus as any);
-    return searchUsers(search, roleFilter, statusFilter);
+    return searchUsers(search, roleFilter, statusFilter, users);
   }, [search, filterRole, filterStatus, users]);
 
-  const [pendingArticles, setPendingArticles] = useState<any[]>(() => {
-    try { const saved = localStorage.getItem(PENDING_ARTICLES_KEY); return saved ? JSON.parse(saved) : []; } catch { return []; }
-  });
+  const [pendingArticles, setPendingArticles] = useState<any[]>([]);
+  const [pendingArticlesLoading, setPendingArticlesLoading] = useState(true);
   const robotStatus = useMemo(() => {
     try { const saved = localStorage.getItem(ROBOT_STATUS_KEY); return saved ? JSON.parse(saved) : { online: false, battery: 0, state: 'offline' }; } catch { return { online: false, battery: 0, state: 'offline' }; }
   }, [users]);
@@ -61,26 +61,33 @@ export default function AdminDashboard() {
   });
 
   useEffect(() => {
-    setUsers(getUsers());
-    try {
-      // migrate any pending users to active (legacy)
-      const all = getUsers(true);
-      const migrated = all.map(u => u.status === 'pending' ? { ...u, status: 'active' } : u);
-      localStorage.setItem('smartcow_users', JSON.stringify(migrated));
-      setUsers(getUsers());
-    } catch {}
-    try {
-      const pSaved = localStorage.getItem(PENDING_ARTICLES_KEY);
-      if (!pSaved) {
-        const seedP = [
-          { id: 'P-2001', title: 'Compost Techniques', author: 'Processor Team', category: 'Composting', submittedAt: new Date().toISOString() },
-          { id: 'P-2002', title: 'Robot Safety Basics', author: 'Tech Team', category: 'Robotics', submittedAt: new Date().toISOString() },
-        ];
-        localStorage.setItem(PENDING_ARTICLES_KEY, JSON.stringify(seedP));
-        setPendingArticles(seedP);
-        pushNotification('admin:Administrator', { id: '', type: 'content', message: 'New content pending review', severity: 'info', time: new Date().toISOString() });
+    const loadUsers = async () => {
+      setUsersLoading(true);
+      try {
+        const allUsers = await getUsers(true);
+        setUsers(allUsers);
+        
+        // Only migrate localStorage users if Supabase is not configured
+        const isSupabaseConfigured = !!(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
+        if (!isSupabaseConfigured) {
+          // migrate any pending users to active (legacy)
+          const migrated = allUsers.map(u => u.status === 'pending' ? { ...u, status: 'active' } : u);
+          localStorage.setItem('smartcow_users', JSON.stringify(migrated));
+          setUsers(migrated);
+        }
+      } catch (error) {
+        console.error('Error loading users:', error);
+        // Fallback to sync version if async fails
+        const { getUsersSync } = await import('../../utils/auth');
+        setUsers(getUsersSync(true));
+      } finally {
+        setUsersLoading(false);
       }
-    } catch {}
+    };
+    
+    loadUsers();
+    // Load pending articles on mount
+    refreshPendingArticles();
     
     // Listen for storage events to refresh pending articles
     const onStorage = (e: StorageEvent) => {
@@ -112,7 +119,17 @@ export default function AdminDashboard() {
       window.removeEventListener('storage', onStorage);
     };
   }, []);
-  const refreshUsers = () => setUsers(getUsers());
+  const refreshUsers = async () => {
+    try {
+      const allUsers = await getUsers(true);
+      setUsers(allUsers);
+    } catch (error) {
+      console.error('Error refreshing users:', error);
+      // Fallback to sync version
+      const { getUsersSync } = await import('../../utils/auth');
+      setUsers(getUsersSync(true));
+    }
+  };
   const refreshPendingArticles = () => { try { const saved = localStorage.getItem(PENDING_ARTICLES_KEY); setPendingArticles(saved ? JSON.parse(saved) : []); } catch { setPendingArticles([]); } };
 
   const onCreateUser = () => { const res = createUserByAdmin(creating.name, creating.email, creating.password, creating.role as any); if (!res.success) return; setCreating({ name: "", email: "", password: "", role: "farmer" }); refreshUsers(); };
@@ -162,7 +179,28 @@ export default function AdminDashboard() {
   const restore = (id: string) => { restoreAccountById(id); refreshUsers(); };
   const changeRole = (id: string, role: string) => { changeRoleById(id, role as any); refreshUsers(); };
 
-  const approveArticle = (article: any, reviewMessage?: string) => {
+  const approveArticle = async (article: any, reviewMessage?: string) => {
+    // Delete from Supabase if configured
+    const isSupabaseConfigured = !!(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
+    if (isSupabaseConfigured) {
+      try {
+        const supabaseArticles = await import('../../services/supabaseArticles');
+        // Create published article
+        await supabaseArticles.createEducationalArticle({
+          authorId: article.authorId || '',
+          authorName: article.author || 'Unknown',
+          title: article.title,
+          content: article.content || '',
+          category: article.category || 'General',
+          publishDate: new Date().toISOString(),
+        });
+        // Delete from pending
+        await supabaseArticles.deletePendingArticle(article.id);
+      } catch (error) {
+        console.error('Error approving article in Supabase:', error);
+      }
+    }
+    
     const remaining = pendingArticles.filter((a: any) => a.id !== article.id);
     localStorage.setItem(PENDING_ARTICLES_KEY, JSON.stringify(remaining));
     try { 
@@ -182,10 +220,27 @@ export default function AdminDashboard() {
     }
     try { const logSaved = localStorage.getItem(CONTENT_REVIEWS_KEY); const logs = logSaved ? JSON.parse(logSaved) : []; const log = { id: Date.now().toString(), articleId: article.id, action: 'approved', message: reviewMessage || '', time: new Date().toISOString() }; localStorage.setItem(CONTENT_REVIEWS_KEY, JSON.stringify([log, ...logs])); } catch {}
     try { publishApprovedArticle({ id: article.id, authorId: article.authorId }); } catch {}
-    refreshPendingArticles();
+    await refreshPendingArticles();
     toast.success('Article approved and published');
   };
-  const rejectArticle = (article: any, reviewMessage?: string) => { const remaining = pendingArticles.filter((a: any) => a.id !== article.id); localStorage.setItem(PENDING_ARTICLES_KEY, JSON.stringify(remaining)); try { const logSaved = localStorage.getItem(CONTENT_REVIEWS_KEY); const logs = logSaved ? JSON.parse(logSaved) : []; const log = { id: Date.now().toString(), articleId: article.id, action: 'rejected', message: reviewMessage || '', time: new Date().toISOString() }; localStorage.setItem(CONTENT_REVIEWS_KEY, JSON.stringify([log, ...logs])); } catch {} try { rejectArticleUpdate({ id: article.id, authorId: article.authorId }); } catch {} refreshPendingArticles(); };
+  const rejectArticle = async (article: any, reviewMessage?: string) => {
+    // Delete from Supabase if configured
+    const isSupabaseConfigured = !!(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
+    if (isSupabaseConfigured) {
+      try {
+        const supabaseArticles = await import('../../services/supabaseArticles');
+        await supabaseArticles.deletePendingArticle(article.id);
+      } catch (error) {
+        console.error('Error rejecting article in Supabase:', error);
+      }
+    }
+    
+    const remaining = pendingArticles.filter((a: any) => a.id !== article.id);
+    localStorage.setItem(PENDING_ARTICLES_KEY, JSON.stringify(remaining));
+    try { const logSaved = localStorage.getItem(CONTENT_REVIEWS_KEY); const logs = logSaved ? JSON.parse(logSaved) : []; const log = { id: Date.now().toString(), articleId: article.id, action: 'rejected', message: reviewMessage || '', time: new Date().toISOString() }; localStorage.setItem(CONTENT_REVIEWS_KEY, JSON.stringify([log, ...logs])); } catch {}
+    try { rejectArticleUpdate({ id: article.id, authorId: article.authorId }); } catch {}
+    await refreshPendingArticles();
+  };
   // removed edit metadata per requirements
 
 
@@ -288,7 +343,9 @@ export default function AdminDashboard() {
                 </div>
                 <div className="flex-1 min-w-0 p-4 bg-white rounded-xl border border-purple-100">
                   <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                    {filteredUsers.length === 0 ? (
+                    {usersLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading users...</div>
+                    ) : filteredUsers.length === 0 ? (
                       <div className="text-center py-8 text-gray-500">No users found</div>
                     ) : (
                       filteredUsers.map(u => (

@@ -1,4 +1,12 @@
 import { UserRole } from '../App';
+import * as supabaseSettings from '../services/supabaseSettings';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
 
 export type NotificationPrefs = {
   chat: boolean;
@@ -64,9 +72,7 @@ export type UserSettings = {
 
 const SETTINGS_PREFIX = 'smartcow_settings:';
 
-export function loadSettings(userId: string, role: UserRole, defaults?: Partial<UserSettings>): UserSettings {
-  const key = `${SETTINGS_PREFIX}${userId}`;
-  const saved = localStorage.getItem(key);
+export async function loadSettings(userId: string, role: UserRole | null, defaults?: Partial<UserSettings>): Promise<UserSettings> {
   const base: UserSettings = {
     profile: {
       fullName: userId.split(':')[1] || 'User',
@@ -100,6 +106,28 @@ export function loadSettings(userId: string, role: UserRole, defaults?: Partial<
     activityLog: [],
     lastUpdated: new Date().toISOString(),
   };
+  
+  // Try Supabase first if configured
+  if (isSupabaseConfigured() && role) {
+    try {
+      const supabaseSettingsData = await supabaseSettings.getUserSettings(userId, role);
+      if (supabaseSettingsData) {
+        // Merge with base to ensure all fields exist
+        const merged = { ...base, ...supabaseSettingsData, ...(defaults || {}) } as UserSettings;
+        // Also save to localStorage as backup
+        const key = `${SETTINGS_PREFIX}${userId}`;
+        localStorage.setItem(key, JSON.stringify(merged));
+        return merged;
+      }
+    } catch (error) {
+      console.error('Error loading settings from Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
+  const key = `${SETTINGS_PREFIX}${userId}`;
+  const saved = localStorage.getItem(key);
   if (!saved) {
     const merged = { ...base, ...(defaults || {}) } as UserSettings;
     localStorage.setItem(key, JSON.stringify(merged));
@@ -114,15 +142,90 @@ export function loadSettings(userId: string, role: UserRole, defaults?: Partial<
   }
 }
 
-export function saveSettings(userId: string, settings: UserSettings) {
+// Synchronous version for backward compatibility (deprecated, use async version)
+export function loadSettingsSync(userId: string, role: UserRole | null, defaults?: Partial<UserSettings>): UserSettings {
+  const base: UserSettings = {
+    profile: {
+      fullName: userId.split(':')[1] || 'User',
+      username: userId.split(':')[1] || 'user',
+      email: '',
+      phone: '',
+      address: '',
+      profilePicture: null,
+      showRoleLabel: role !== 'admin',
+    },
+    security: {
+      twoFactorEnabled: false,
+      twoFactorMethod: null,
+      activeSessions: [],
+    },
+    notifications: {
+      chat: true,
+      forumReplies: true,
+      articles: true,
+      marketplace: true,
+      system: true,
+    },
+    privacy: {
+      allowMessages: true,
+      publicProfile: true,
+      showLastSeen: true,
+      allowTagging: true,
+    },
+    roleSpecific: {},
+    darkMode: false,
+    activityLog: [],
+    lastUpdated: new Date().toISOString(),
+  };
+  
   const key = `${SETTINGS_PREFIX}${userId}`;
+  const saved = localStorage.getItem(key);
+  if (!saved) {
+    const merged = { ...base, ...(defaults || {}) } as UserSettings;
+    localStorage.setItem(key, JSON.stringify(merged));
+    return merged;
+  }
+  try {
+    const parsed = JSON.parse(saved);
+    return { ...base, ...parsed } as UserSettings;
+  } catch {
+    localStorage.setItem(key, JSON.stringify(base));
+    return base;
+  }
+}
+
+export async function saveSettings(userId: string, settings: UserSettings, role?: UserRole | null) {
   const next = { ...settings, lastUpdated: new Date().toISOString() };
+  
+  // Save to Supabase if configured
+  if (isSupabaseConfigured() && role) {
+    try {
+      await supabaseSettings.saveUserSettings(userId, role, next);
+    } catch (error) {
+      console.error('Error saving settings to Supabase:', error);
+      // Continue with localStorage save as fallback
+    }
+  }
+  
+  // Always save to localStorage as backup
+  const key = `${SETTINGS_PREFIX}${userId}`;
   localStorage.setItem(key, JSON.stringify(next));
 }
 
-export function updateSettings(userId: string, patch: Partial<UserSettings>) {
-  const current = loadSettings(userId, null);
+export async function updateSettings(userId: string, patch: Partial<UserSettings>, role?: UserRole | null) {
+  const current = await loadSettings(userId, role || null);
   const next = { ...current, ...patch, lastUpdated: new Date().toISOString() } as UserSettings;
+  
+  // Save to Supabase if configured
+  if (isSupabaseConfigured() && role) {
+    try {
+      await supabaseSettings.saveUserSettings(userId, role, next);
+    } catch (error) {
+      console.error('Error updating settings in Supabase:', error);
+    }
+  }
+  
+  // Always save to localStorage as backup
   localStorage.setItem(`${SETTINGS_PREFIX}${userId}`, JSON.stringify(next));
   return next;
 }

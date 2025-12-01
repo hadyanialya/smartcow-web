@@ -22,6 +22,7 @@ import { formatCustomIdr, formatPriceWithSeparator } from '../utils/currency';
 import { useCart, useAuth } from '../App';
 import { getMarketplaceProducts, createOrderForSeller, addLikedProduct, removeLikedProduct, isProductLiked, getLikedProducts } from '../services/backend';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+import { loadSettings, saveSettings } from '../utils/settings';
 
 interface Product {
   id: string;
@@ -80,9 +81,36 @@ export default function Marketplace() {
     createdAt: number;
     trackingNo: string;
   }[]>([]);
-  const [view, setView] = useState<'browse' | 'cart' | 'payment' | 'processing' | 'payment-success' | 'orders' | 'saved'>('browse');
+  const [view, setView] = useState<'browse' | 'cart' | 'shipping-info' | 'payment' | 'processing' | 'payment-success' | 'orders' | 'saved'>('browse');
   const [paymentCheckoutItems, setPaymentCheckoutItems] = useState<(Product & { quantity: number })[]>([]);
   const [paymentError, setPaymentError] = useState('');
+  const [shippingInfo, setShippingInfo] = useState({
+    name: '',
+    phone: '',
+    address: '',
+  });
+  const [shippingInfoError, setShippingInfoError] = useState('');
+
+  // Load shipping info from settings on mount
+  useEffect(() => {
+    const loadShippingInfo = async () => {
+      if (userName && userRole) {
+        try {
+          const settings = await loadSettings(userId, userRole);
+          if (settings.profile.fullName || settings.profile.phone || settings.profile.address) {
+            setShippingInfo({
+              name: settings.profile.fullName || '',
+              phone: settings.profile.phone || '',
+              address: settings.profile.address || '',
+            });
+          }
+        } catch (error) {
+          console.error('Error loading shipping info:', error);
+        }
+      }
+    };
+    loadShippingInfo();
+  }, [userName, userRole, userId]);
   const [currentRatingProduct, setCurrentRatingProduct] = useState<Product | null>(null);
   const [currentRating, setCurrentRating] = useState<number>(0);
   const [productRatings, setProductRatings] = useState<{ [productId: string]: { ratings: number[]; count: number; average: number } }>({});
@@ -154,9 +182,9 @@ export default function Marketplace() {
       }
     };
 
-    const refreshProducts = () => {
+    const refreshProducts = async () => {
       try {
-        const rawProducts = getMarketplaceProducts();
+        const rawProducts = await getMarketplaceProducts();
         console.log('[Marketplace] Raw products from storage:', rawProducts.length, rawProducts);
         
         const enriched = rawProducts.map(enrich);
@@ -339,20 +367,22 @@ export default function Marketplace() {
         if (prev <= 1) {
           clearInterval(timer);
           // Payment succeeded: create order entries for each cart item
-          try {
-            const buyerId = `${userRole}:${userName || 'anonymous'}`;
-            const buyerName = userName || 'Anonymous';
-            cartSnapshot.forEach(item => {
-              // item.price is already in IDR as shown in the marketplace
-              const qty = item.quantity || 1;
-              const totalIdr = Math.round(item.price * qty);
-              // product.sellerId expected to be present from service
-              const sellerId = (item as any).sellerId || `seller:${item.seller}`;
-              createOrderForSeller({ productId: item.id, productName: item.name, sellerId, sellerName: item.seller, buyerId, buyerName, quantity: qty, totalIdr });
-            });
-          } catch (e) {
-            // ignore order creation errors
-          }
+          (async () => {
+            try {
+              const buyerId = `${userRole}:${userName || 'anonymous'}`;
+              const buyerName = userName || 'Anonymous';
+              for (const item of cartSnapshot) {
+                // item.price is already in IDR as shown in the marketplace
+                const qty = item.quantity || 1;
+                const totalIdr = Math.round(item.price * qty);
+                // product.sellerId expected to be present from service
+                const sellerId = (item as any).sellerId || `seller:${item.seller}`;
+                await createOrderForSeller({ productId: item.id, productName: item.name, sellerId, sellerName: item.seller, buyerId, buyerName, quantity: qty, totalIdr });
+              }
+            } catch (e) {
+              // ignore order creation errors
+            }
+          })();
           clearCart();
           setCheckoutStep('success');
           return 0;
@@ -797,11 +827,141 @@ export default function Marketplace() {
               onProceedToPayment={() => {
                 setPaymentCheckoutItems(cart);
                 setPaymentError('');
-                setView('payment');
+                setShippingInfoError('');
+                setView('shipping-info');
               }}
               totalPrice={getTotalPrice()}
               onClose={() => setView('browse')}
             />
+          </motion.div>
+        )}
+
+        {isAuthenticated && userRole !== 'seller' && view === 'shipping-info' && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className="space-y-6"
+          >
+            <Card className="p-6 border-purple-200">
+              <div className="flex items-center justify-between mb-6">
+                <div className="text-gray-900 font-semibold text-xl">Data Pengiriman</div>
+                <Button variant="ghost" size="sm" onClick={() => setView('cart')}>
+                  ← Kembali ke Cart
+                </Button>
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="shipping-name" className="text-gray-700">Nama Lengkap *</Label>
+                  <Input
+                    id="shipping-name"
+                    type="text"
+                    placeholder="Masukkan nama lengkap"
+                    value={shippingInfo.name}
+                    onChange={(e) => {
+                      setShippingInfo({ ...shippingInfo, name: e.target.value });
+                      setShippingInfoError('');
+                    }}
+                    className="mt-1 rounded-xl"
+                    required
+                  />
+                </div>
+                
+                <div>
+                  <Label htmlFor="shipping-phone" className="text-gray-700">Nomor HP *</Label>
+                  <Input
+                    id="shipping-phone"
+                    type="tel"
+                    placeholder="Contoh: 081234567890"
+                    value={shippingInfo.phone}
+                    onChange={(e) => {
+                      setShippingInfo({ ...shippingInfo, phone: e.target.value });
+                      setShippingInfoError('');
+                    }}
+                    className="mt-1 rounded-xl"
+                    required
+                  />
+                </div>
+                
+                <div>
+                  <Label htmlFor="shipping-address" className="text-gray-700">Alamat Lengkap *</Label>
+                  <textarea
+                    id="shipping-address"
+                    placeholder="Masukkan alamat lengkap pengiriman"
+                    value={shippingInfo.address}
+                    onChange={(e) => {
+                      setShippingInfo({ ...shippingInfo, address: e.target.value });
+                      setShippingInfoError('');
+                    }}
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
+                    rows={4}
+                    required
+                  />
+                </div>
+              </div>
+
+              {shippingInfoError && (
+                <div className="mt-4 p-3 border border-red-300 bg-red-50 text-red-700 rounded-lg text-sm">
+                  {shippingInfoError}
+                </div>
+              )}
+
+              <div className="mt-6 flex gap-3">
+                <Button 
+                  variant="outline" 
+                  onClick={() => setView('cart')} 
+                  className="flex-1 rounded-xl"
+                >
+                  Kembali
+                </Button>
+                <Button
+                  className="flex-1 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl"
+                  onClick={() => {
+                    // Validate shipping info
+                    if (!shippingInfo.name.trim()) {
+                      setShippingInfoError('Nama lengkap harus diisi');
+                      return;
+                    }
+                    if (!shippingInfo.phone.trim()) {
+                      setShippingInfoError('Nomor HP harus diisi');
+                      return;
+                    }
+                    if (!shippingInfo.address.trim()) {
+                      setShippingInfoError('Alamat lengkap harus diisi');
+                      return;
+                    }
+                    
+                    // Validate phone number format (basic validation)
+                    const phoneRegex = /^[0-9+\-\s()]+$/;
+                    if (!phoneRegex.test(shippingInfo.phone.trim())) {
+                      setShippingInfoError('Format nomor HP tidak valid');
+                      return;
+                    }
+
+                    // Save shipping info to settings
+                    if (userName && userRole) {
+                      (async () => {
+                        try {
+                          const settings = await loadSettings(userId, userRole);
+                          settings.profile.fullName = shippingInfo.name.trim();
+                          settings.profile.phone = shippingInfo.phone.trim();
+                          settings.profile.address = shippingInfo.address.trim();
+                          await saveSettings(userId, settings, userRole);
+                        } catch (error) {
+                          console.error('Error saving shipping info:', error);
+                        }
+                      })();
+                    }
+
+                    setShippingInfoError('');
+                    setView('payment');
+                  }}
+                >
+                  Lanjut ke Payment
+                </Button>
+              </div>
+            </Card>
           </motion.div>
         )}
 
@@ -831,17 +991,35 @@ export default function Marketplace() {
                   {formatCustomIdr(paymentCheckoutItems.reduce((t,i)=>t + i.price * i.quantity, 0))}
                 </span>
               </div>
+              
+              {/* Shipping Info Display */}
+              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="text-sm font-medium text-blue-900 mb-2">Data Pengiriman:</div>
+                <div className="text-sm text-blue-700 space-y-1">
+                  <div><strong>Nama:</strong> {shippingInfo.name || '-'}</div>
+                  <div><strong>HP:</strong> {shippingInfo.phone || '-'}</div>
+                  <div><strong>Alamat:</strong> {shippingInfo.address || '-'}</div>
+                </div>
+              </div>
+
               {paymentError && (
                 <div className="mt-3 p-3 border border-red-300 bg-red-50 text-red-700 rounded-lg text-sm">
                   {paymentError}
                 </div>
               )}
               <div className="mt-4 flex gap-3">
-                <Button variant="outline" onClick={() => setView('cart')} className="flex-1">Back to Cart</Button>
+                <Button variant="outline" onClick={() => setView('shipping-info')} className="flex-1 rounded-xl">Ubah Data</Button>
                 <Button
                   variant="outline"
                   className="flex-1"
                   onClick={() => {
+                    // Validate shipping info is filled
+                    if (!shippingInfo.name.trim() || !shippingInfo.phone.trim() || !shippingInfo.address.trim()) {
+                      setPaymentError('Data pengiriman belum lengkap. Silakan isi data terlebih dahulu.');
+                      setView('shipping-info');
+                      return;
+                    }
+                    
                     const usdTotal = paymentCheckoutItems.reduce((t,i)=>t + i.price * i.quantity, 0);
                     const idrTotal = Math.round(usdTotal);
                     if (balance < idrTotal) {
@@ -873,15 +1051,17 @@ export default function Marketplace() {
                               ...prev
                             ];
                           });
-                          try {
-                            paymentCheckoutItems.forEach(it => {
-                              if (it.sellerId) {
-                                const buyerId = `${userRole}:${userName || 'anonymous'}`;
-                                const buyerName = userName || 'Anonymous';
-                                createOrderForSeller({ productId: it.id, productName: it.name, sellerId: it.sellerId, sellerName: it.seller, buyerId, buyerName, quantity: it.quantity, totalIdr: Math.round(it.price * it.quantity) });
+                          (async () => {
+                            try {
+                              for (const it of paymentCheckoutItems) {
+                                if (it.sellerId) {
+                                  const buyerId = `${userRole}:${userName || 'anonymous'}`;
+                                  const buyerName = userName || 'Anonymous';
+                                  await createOrderForSeller({ productId: it.id, productName: it.name, sellerId: it.sellerId, sellerName: it.seller, buyerId, buyerName, quantity: it.quantity, totalIdr: Math.round(it.price * it.quantity) });
+                                }
                               }
-                            });
-                          } catch {}
+                            } catch {}
+                          })();
                           setView('payment-success');
                           return 0;
                         }

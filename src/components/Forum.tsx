@@ -11,6 +11,14 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../App';
 import { getUsers } from '../utils/auth';
+import * as supabaseForum from '../services/supabaseForum';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
 
 function getTimeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
@@ -60,61 +68,113 @@ export default function Forum() {
   const [newCategory, setNewCategory] = useState('General');
   const [newTags, setNewTags] = useState('');
   const [discussions, setDiscussions] = useState<Discussion[]>([]);
+  const [validUsers, setValidUsers] = useState<any[]>([]);
 
   // Get valid users to filter discussions
-  const validUsers = useMemo(() => getUsers(), []);
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const users = await getUsers();
+        setValidUsers(users || []);
+      } catch (error) {
+        console.error('Error loading users:', error);
+        setValidUsers([]);
+      }
+    };
+    loadUsers();
+  }, []);
+
   const validUserNames = useMemo(() => {
+    if (!Array.isArray(validUsers)) return new Set(['Administrator']);
     const names = new Set(validUsers.map(u => u.name));
     // Include admin
     names.add('Administrator');
     return names;
   }, [validUsers]);
-  const activeMemberCount = validUsers.length + 1; // +1 for admin
+  const activeMemberCount = (Array.isArray(validUsers) ? validUsers.length : 0) + 1; // +1 for admin
 
   useEffect(() => {
-    const saved = localStorage.getItem(FORUM_STORAGE_KEY);
-    let parsed: Discussion[] = [];
-    
-    if (saved) {
-      try {
-        parsed = JSON.parse(saved);
-      } catch {
-        parsed = [];
-      }
-    }
-
-    // Filter out discussions from invalid users (Dimas Dzikra, Hadyani Alya, etc.)
-    const validDiscussions = parsed.filter(d => {
-      return validUserNames.has(d.authorName);
-    });
-
-    // If no valid discussions and no saved data, start with empty array
-    if (validDiscussions.length !== parsed.length) {
-      // Update localStorage to remove invalid discussions
-      localStorage.setItem(FORUM_STORAGE_KEY, JSON.stringify(validDiscussions));
-    }
-
-    setDiscussions(validDiscussions);
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === FORUM_STORAGE_KEY && e.newValue) {
+    const loadDiscussions = async () => {
+      let loadedDiscussions: Discussion[] = [];
+      
+      // Try Supabase first
+      if (isSupabaseConfigured()) {
         try {
-          const parsed: Discussion[] = JSON.parse(e.newValue);
-          // Filter invalid users when loading from storage
-          const valid = parsed.filter(d => validUserNames.has(d.authorName));
-          setDiscussions(valid);
-        } catch {
-          // ignore
+          const supabaseDiscussions = await supabaseForum.getForumDiscussions();
+          // Convert to Discussion format
+          loadedDiscussions = supabaseDiscussions.map((d) => ({
+            id: d.id,
+            title: d.title,
+            authorName: d.authorName,
+            authorRole: d.authorRole,
+            timestamp: d.createdAt,
+            category: d.category,
+            likes: d.likes,
+            likedUsers: d.likedUsers,
+            content: d.content,
+            tags: d.tags || [],
+            comments: [], // Comments will be loaded separately
+          }));
+          
+          // Load comments for each discussion
+          for (const discussion of loadedDiscussions) {
+            try {
+              const comments = await supabaseForum.getForumComments(discussion.id);
+              discussion.comments = comments.map((c) => ({
+                commentId: c.id,
+                authorRole: c.authorRole,
+                authorName: c.authorName,
+                timestamp: c.createdAt,
+                content: c.content,
+                children: [], // Nested comments not in schema yet
+              }));
+            } catch (error) {
+              console.error('Error loading comments:', error);
+            }
+          }
+        } catch (error) {
+          console.error('Error loading discussions from Supabase:', error);
+          // Fallback to localStorage
         }
       }
+      
+      // Fallback to localStorage if Supabase not configured or failed
+      if (loadedDiscussions.length === 0) {
+        const saved = localStorage.getItem(FORUM_STORAGE_KEY);
+        if (saved) {
+          try {
+            const parsed: Discussion[] = JSON.parse(saved);
+            loadedDiscussions = parsed.filter(d => validUserNames.has(d.authorName));
+          } catch {
+            loadedDiscussions = [];
+          }
+        }
+      }
+
+      setDiscussions(loadedDiscussions);
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    
+    loadDiscussions();
+    
+    // Polling for updates (every 5 seconds)
+    const interval = setInterval(() => {
+      loadDiscussions();
+    }, 5000);
+    
+    return () => clearInterval(interval);
   }, [validUserNames]);
 
-  const persist = (list: Discussion[]) => {
+  const persist = async (list: Discussion[]) => {
     // Only persist discussions from valid users
     const valid = list.filter(d => validUserNames.has(d.authorName));
+    
+    // Save to Supabase if configured
+    if (isSupabaseConfigured()) {
+      // Note: This is a simplified version - in production, you'd want to sync each discussion individually
+      // For now, we'll keep localStorage as backup
+    }
+    
+    // Always save to localStorage as backup
     localStorage.setItem(FORUM_STORAGE_KEY, JSON.stringify(valid));
     setDiscussions(valid);
   };
@@ -126,13 +186,58 @@ export default function Forum() {
 
   
 
-  const submitNew = () => {
+  const submitNew = async () => {
     if (!newTitle || !newBody) return;
     const tagsArr = newTags.split(',').map(t => t.trim()).filter(Boolean);
+    
+    // Try Supabase first
+    if (isSupabaseConfigured()) {
+      try {
+        const authorId = `${userRole}:${userName || 'anonymous'}`;
+        const created = await supabaseForum.createForumDiscussion({
+          authorId,
+          authorName: userName || 'Anonymous',
+          authorRole: userRole || 'buyer',
+          title: newTitle,
+          content: newBody,
+          category: newCategory,
+        });
+        
+        if (created) {
+          const item: Discussion = {
+            id: created.id,
+            title: created.title,
+            authorName: created.authorName,
+            authorRole: created.authorRole,
+            timestamp: created.createdAt,
+            category: created.category,
+            likes: created.likes,
+            likedUsers: created.likedUsers,
+            content: created.content,
+            tags: tagsArr,
+            comments: [],
+          };
+          const next = [item, ...discussions];
+          setDiscussions(next);
+          await persist(next);
+          setShowNew(false);
+          setNewTitle('');
+          setNewBody('');
+          setNewCategory('General');
+          setNewTags('');
+          return;
+        }
+      } catch (error) {
+        console.error('Error creating discussion in Supabase:', error);
+        // Fallback to localStorage
+      }
+    }
+    
+    // Fallback to localStorage
     const item: Discussion = { id: `d-${Date.now()}`, title: newTitle, authorName: userName || 'Anonymous', authorRole: userRole, timestamp: new Date().toISOString(), category: newCategory, likes: 0, likedUsers: [], content: newBody, tags: tagsArr, comments: [] };
     const next = [item, ...discussions];
     setDiscussions(next);
-    persist(next);
+    await persist(next);
     setShowNew(false);
     setNewTitle('');
     setNewBody('');
@@ -140,27 +245,77 @@ export default function Forum() {
     setNewTags('');
   };
 
-  const onToggleLike = (id: string) => {
+  const onToggleLike = async (id: string) => {
+    const discussion = discussions.find(d => d.id === id);
+    if (!discussion) return;
+    
+    const hasLiked = discussion.likedUsers.includes(currentUserId);
+    const likedUsers = hasLiked ? discussion.likedUsers.filter(u => u !== currentUserId) : [...discussion.likedUsers, currentUserId];
+    const likes = hasLiked ? Math.max(0, discussion.likes - 1) : discussion.likes + 1;
+    
+    // Update in Supabase if configured
+    if (isSupabaseConfigured()) {
+      try {
+        await supabaseForum.updateForumDiscussion(id, { likes, likedUsers });
+      } catch (error) {
+        console.error('Error updating like in Supabase:', error);
+      }
+    }
+    
     const next = discussions.map(d => {
       if (d.id !== id) return d;
-      const hasLiked = d.likedUsers.includes(currentUserId);
-      const likedUsers = hasLiked ? d.likedUsers.filter(u => u !== currentUserId) : [...d.likedUsers, currentUserId];
-      const likes = hasLiked ? Math.max(0, d.likes - 1) : d.likes + 1;
       return { ...d, likedUsers, likes };
     });
     setDiscussions(next);
-    persist(next);
+    await persist(next);
   };
 
-  const onAddComment = (id: string, content: string) => {
+  const onAddComment = async (id: string, content: string) => {
     if (!content) return;
+    
+    // Try Supabase first
+    if (isSupabaseConfigured()) {
+      try {
+        const authorId = `${userRole}:${userName || 'anonymous'}`;
+        const created = await supabaseForum.createForumComment({
+          discussionId: id,
+          authorId,
+          authorName: userName || 'Anonymous',
+          authorRole: userRole || 'buyer',
+          content,
+        });
+        
+        if (created) {
+          const c: Comment = {
+            commentId: created.id,
+            authorRole: created.authorRole,
+            authorName: created.authorName,
+            timestamp: created.createdAt,
+            content: created.content,
+            children: [],
+          };
+          const next = discussions.map(d => {
+            if (d.id !== id) return d;
+            return { ...d, comments: [...d.comments, c] };
+          });
+          setDiscussions(next);
+          await persist(next);
+          return;
+        }
+      } catch (error) {
+        console.error('Error creating comment in Supabase:', error);
+        // Fallback to localStorage
+      }
+    }
+    
+    // Fallback to localStorage
+    const c: Comment = { commentId: `c-${Date.now()}`, authorRole: userRole, authorName: userName || 'Anonymous', timestamp: new Date().toISOString(), content, children: [] };
     const next = discussions.map(d => {
       if (d.id !== id) return d;
-      const c: Comment = { commentId: `c-${Date.now()}`, authorRole: userRole, authorName: userName || 'Anonymous', timestamp: new Date().toISOString(), content, children: [] };
       return { ...d, comments: [...d.comments, c] };
     });
     setDiscussions(next);
-    persist(next);
+    await persist(next);
   };
 
   const onReplyToComment = (id: string, commentId: string, content: string) => {

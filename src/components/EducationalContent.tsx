@@ -8,6 +8,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { BookOpen, Search, Clock, Eye, Bookmark, ChevronUp, ChevronDown } from 'lucide-react';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { useAuth } from '../App';
+import * as supabaseArticles from '../services/supabaseArticles';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
 
 type Article = {
   id: string;
@@ -86,16 +94,45 @@ export default function EducationalContent() {
   });
 
   useEffect(() => {
-    const saved = localStorage.getItem(ARTICLES_STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as Article[];
-        setArticles(parsed);
-      } catch {
-        setArticles([]);
+    const loadArticles = async () => {
+      // Try Supabase first
+      if (isSupabaseConfigured()) {
+        try {
+          const supabaseArticlesData = await supabaseArticles.getEducationalArticles();
+          // Convert to Article format
+          const converted: Article[] = supabaseArticlesData.map((a) => ({
+            id: a.id,
+            title: a.title,
+            cover: a.cover || '',
+            author: a.authorName,
+            body: a.content,
+            publishDate: a.publishDate || new Date(a.createdAt).toLocaleDateString(),
+            category: a.category,
+            readTime: '5 min', // Default
+            views: '0', // Default
+          }));
+          
+          if (converted.length > 0) {
+            setArticles(converted);
+            return;
+          }
+        } catch (error) {
+          console.error('Error loading articles from Supabase:', error);
+          // Fallback to localStorage
+        }
       }
-    } else {
-      const defaults: Article[] = [
+      
+      // Fallback to localStorage
+      const saved = localStorage.getItem(ARTICLES_STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved) as Article[];
+          setArticles(parsed);
+        } catch {
+          setArticles([]);
+        }
+      } else {
+        const defaults: Article[] = [
         {
           id: 'smart-farming-guide',
           title: 'Complete Guide to Smart Farming Technology',
@@ -140,10 +177,13 @@ export default function EducationalContent() {
           readTime: '10 min',
           views: '1.5K'
         }
-      ];
-      setArticles(defaults);
-      localStorage.setItem(ARTICLES_STORAGE_KEY, JSON.stringify(defaults));
-    }
+        ];
+        setArticles(defaults);
+        localStorage.setItem(ARTICLES_STORAGE_KEY, JSON.stringify(defaults));
+      }
+    };
+    
+    loadArticles();
   }, []);
 
   useEffect(() => {
@@ -181,8 +221,25 @@ export default function EducationalContent() {
     setEditDraft(a);
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editDraft) return;
+    
+    // Update in Supabase if configured
+    if (isSupabaseConfigured()) {
+      try {
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(editDraft.id);
+        if (isUUID) {
+          await supabaseArticles.updateEducationalArticle(editDraft.id, {
+            title: editDraft.title,
+            content: editDraft.body,
+            category: editDraft.category,
+          });
+        }
+      } catch (error) {
+        console.error('Error updating article in Supabase:', error);
+      }
+    }
+    
     const next = articles.map(a => a.id === editDraft.id ? editDraft : a);
     setArticles(next);
     localStorage.setItem(ARTICLES_STORAGE_KEY, JSON.stringify(next));
@@ -190,7 +247,19 @@ export default function EducationalContent() {
     setEditDraft(null);
   };
 
-  const deleteArticle = (id: string) => {
+  const deleteArticle = async (id: string) => {
+    // Delete from Supabase if configured
+    if (isSupabaseConfigured()) {
+      try {
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+        if (isUUID) {
+          await supabaseArticles.deleteEducationalArticle(id);
+        }
+      } catch (error) {
+        console.error('Error deleting article from Supabase:', error);
+      }
+    }
+    
     const next = articles.filter(a => a.id !== id);
     setArticles(next);
     localStorage.setItem(ARTICLES_STORAGE_KEY, JSON.stringify(next));
@@ -215,17 +284,41 @@ export default function EducationalContent() {
     return d.toLocaleDateString();
   })];
 
-  const submitCreate = () => {
+  const submitCreate = async () => {
     if (!createDraft.title || !createDraft.author || !createDraft.cover || !createDraft.body) return;
-    const id = `article-${Date.now()}`;
-    const publishDate = createDraft.publishDate === 'Publish Now' ? new Date().toLocaleDateString() : createDraft.publishDate;
+    
+    const publishDate = createDraft.publishDate === 'Publish Now' ? new Date().toISOString() : createDraft.publishDate;
+    let articleId = `article-${Date.now()}`;
+    
+    // Save to Supabase if configured
+    if (isSupabaseConfigured()) {
+      try {
+        const authorId = `admin:${userName || 'Administrator'}`;
+        const created = await supabaseArticles.createEducationalArticle({
+          authorId,
+          authorName: createDraft.author,
+          title: createDraft.title,
+          content: createDraft.body,
+          category: createDraft.category,
+          publishDate: publishDate,
+        });
+        
+        if (created) {
+          articleId = created.id;
+        }
+      } catch (error) {
+        console.error('Error creating article in Supabase:', error);
+        // Continue with localStorage save as fallback
+      }
+    }
+    
     const newArticle: Article = {
-      id,
+      id: articleId,
       title: createDraft.title,
       cover: createDraft.cover,
       author: createDraft.author,
       body: createDraft.body,
-      publishDate,
+      publishDate: createDraft.publishDate === 'Publish Now' ? new Date().toLocaleDateString() : createDraft.publishDate,
       category: createDraft.category,
       readTime: '5 min',
       views: '0'

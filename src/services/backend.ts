@@ -1,4 +1,12 @@
 import { UserRole } from '../App';
+import { supabase } from '../lib/supabase';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
 
 type Id = string;
 
@@ -80,9 +88,45 @@ function safeWrite(key: string, value: unknown) {
 // NOTE: Removed aggressive clearing of marketplace on module load so saved
 // marketplace products persist across refreshes. Marketplace is now managed
 // by `saveCpProducts` and other explicit actions.
-export function getCpProducts(cpId: string): Product[] {
-  // Read from local storage (per-seller/compost-processor storage)
-  // This is the source of truth for each seller's product list
+export async function getCpProducts(cpId: string): Promise<Product[]> {
+  // Try Supabase first if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('seller_id', cpId)
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        console.error('Error fetching products from Supabase:', error);
+        // Fallback to localStorage
+      } else if (data) {
+        // Convert Supabase format to Product format
+        return data.map((p: any) => ({
+          id: p.id,
+          sellerId: p.seller_id,
+          sellerName: p.seller_name,
+          productOwnerRole: p.product_owner_role as 'seller' | 'compostProcessor' | undefined,
+          ownerUserId: p.owner_user_id || undefined,
+          name: p.name,
+          price: Number(p.price),
+          unit: p.unit,
+          category: p.category,
+          stock: p.stock,
+          status: p.status as 'active' | 'inactive',
+          description: p.description,
+          image: p.image || null,
+          createdAt: p.created_at,
+        }));
+      }
+    } catch (error) {
+      console.error('Error in getCpProducts Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   return safeRead<Product[]>(`${CP_PRODUCTS_PREFIX}${cpId}`, []);
 }
 
@@ -141,7 +185,7 @@ export function saveCpProducts(cpId: string, list: Product[]) {
   } catch {}
 }
 
-export function createCpProduct(cpId: string, cpName: string, data: Omit<Product, 'id' | 'sellerId' | 'sellerName' | 'createdAt'>): Product {
+export async function createCpProduct(cpId: string, cpName: string, data: Omit<Product, 'id' | 'sellerId' | 'sellerName' | 'createdAt'>): Promise<Product> {
   // Only Seller and Compost Processor roles are allowed to create products
   if (!cpId.startsWith('seller:') && !cpId.startsWith('compost_processor:')) {
     throw new Error('Only Seller or Compost Processor can create products');
@@ -173,6 +217,42 @@ export function createCpProduct(cpId: string, cpName: string, data: Omit<Product
     status: finalStatus,  // Override status AFTER spread to ensure it's always 'active' (unless explicitly 'inactive')
   };
   
+  // Save to Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const { data: supabaseData, error } = await supabase
+        .from('products')
+        .insert({
+          seller_id: cpId,
+          seller_name: cpName,
+          product_owner_role: role || null,
+          owner_user_id: userId || null,
+          name: item.name,
+          price: item.price,
+          unit: item.unit,
+          category: item.category,
+          stock: item.stock,
+          status: item.status,
+          description: item.description,
+          image: item.image || null,
+          created_at: item.createdAt,
+        })
+        .select()
+        .single();
+      
+      if (error) {
+        console.error('Error saving product to Supabase:', error);
+        // Continue with localStorage save even if Supabase fails
+      } else if (supabaseData) {
+        // Update item with Supabase ID
+        item.id = supabaseData.id;
+      }
+    } catch (error) {
+      console.error('Error in createCpProduct Supabase:', error);
+      // Continue with localStorage save even if Supabase fails
+    }
+  }
+  
   // Add to local list and save (this will also update the global marketplace)
   const next = [item, ...list];
   saveCpProducts(cpId, next);
@@ -180,20 +260,150 @@ export function createCpProduct(cpId: string, cpName: string, data: Omit<Product
   return item;
 }
 
-export function updateCpProduct(cpId: string, id: string, patch: Partial<Product>) {
+export async function updateCpProduct(cpId: string, id: string, patch: Partial<Product>) {
   const list = getCpProducts(cpId);
+  const updatedProduct = list.find(p => p.id === id);
+  if (!updatedProduct) return;
+  
   const next = list.map(p => p.id === id ? { ...p, ...patch } : p);
+  const finalProduct = { ...updatedProduct, ...patch };
+  
+  // Update in Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      // Check if product ID is UUID (from Supabase) or timestamp-based (from localStorage)
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+      
+      if (isUUID) {
+        // Product exists in Supabase, update it
+        const { error } = await supabase
+          .from('products')
+          .update({
+            name: finalProduct.name,
+            price: finalProduct.price,
+            unit: finalProduct.unit,
+            category: finalProduct.category,
+            stock: finalProduct.stock,
+            status: finalProduct.status,
+            description: finalProduct.description,
+            image: finalProduct.image || null,
+          })
+          .eq('id', id);
+        
+        if (error) {
+          console.error('Error updating product in Supabase:', error);
+        }
+      } else {
+        // Product only exists in localStorage, try to find it in Supabase by seller_id and name
+        // or create new entry
+        const { data: existing } = await supabase
+          .from('products')
+          .select('id')
+          .eq('seller_id', cpId)
+          .eq('name', finalProduct.name)
+          .single();
+        
+        if (existing) {
+          // Update existing
+          const { error } = await supabase
+            .from('products')
+            .update({
+              name: finalProduct.name,
+              price: finalProduct.price,
+              unit: finalProduct.unit,
+              category: finalProduct.category,
+              stock: finalProduct.stock,
+              status: finalProduct.status,
+              description: finalProduct.description,
+              image: finalProduct.image || null,
+            })
+            .eq('id', existing.id);
+          
+          if (error) {
+            console.error('Error updating product in Supabase:', error);
+          } else {
+            // Update local ID to match Supabase ID
+            const nextWithId = next.map(p => p.id === id ? { ...p, id: existing.id } : p);
+            saveCpProducts(cpId, nextWithId);
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in updateCpProduct Supabase:', error);
+    }
+  }
+  
   saveCpProducts(cpId, next);
   // saveCpProducts already dispatches events, but we'll ensure it's done here too
 }
 
-export function deleteCpProduct(cpId: string, id: string) {
+export async function deleteCpProduct(cpId: string, id: string) {
   const list = getCpProducts(cpId);
   const next = list.filter(p => p.id !== id);
+  
+  // Delete from Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+      
+      if (isUUID) {
+        const { error } = await supabase
+          .from('products')
+          .delete()
+          .eq('id', id);
+        
+        if (error) {
+          console.error('Error deleting product from Supabase:', error);
+        }
+      }
+    } catch (error) {
+      console.error('Error in deleteCpProduct Supabase:', error);
+    }
+  }
+  
   saveCpProducts(cpId, next);
 }
 
-export function getMarketplaceProducts(): Product[] {
+export async function getMarketplaceProducts(): Promise<Product[]> {
+  // Try Supabase first if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        console.error('Error fetching marketplace products from Supabase:', error);
+        // Fallback to localStorage
+      } else if (data) {
+        // Convert Supabase format to Product format
+        return data.map((p: any) => ({
+          id: p.id,
+          sellerId: p.seller_id,
+          sellerName: p.seller_name,
+          productOwnerRole: p.product_owner_role as 'seller' | 'compostProcessor' | undefined,
+          ownerUserId: p.owner_user_id || undefined,
+          name: p.name,
+          price: Number(p.price),
+          unit: p.unit,
+          category: p.category,
+          stock: p.stock,
+          status: p.status as 'active' | 'inactive',
+          description: p.description,
+          image: p.image || null,
+          createdAt: p.created_at,
+        }));
+      }
+    } catch (error) {
+      console.error('Error in getMarketplaceProducts Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   return safeRead<Product[]>(MARKETPLACE_PRODUCTS_KEY, []);
 }
 
@@ -219,15 +429,13 @@ export function updateArticle(cpId: string, id: string, patch: Partial<Article>)
   saveCpArticles(cpId, next);
 }
 
-export function submitArticleForApproval(cpId: string, id: string) {
+export async function submitArticleForApproval(cpId: string, id: string) {
   const list = getCpArticles(cpId);
   const a = list.find(x => x.id === id);
   if (!a) return;
   a.status = 'pending';
   saveCpArticles(cpId, list);
-  const pending = safeRead<any[]>(PENDING_ARTICLES_KEY, []);
-  // Check if article already exists in pending (to avoid duplicates)
-  const existingIndex = pending.findIndex(p => p.id === a.id);
+  
   // Extract additional metadata (cover, publishDate) if available
   const articleWithMeta = a as any;
   const payload = { 
@@ -241,6 +449,34 @@ export function submitArticleForApproval(cpId: string, id: string) {
     publishDate: articleWithMeta.publishDate || new Date().toLocaleDateString(),
     submittedAt: new Date().toISOString() 
   };
+  
+  // Save to Supabase pending_articles table if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const supabaseArticles = await import('./supabaseArticles');
+      // Check if article already exists in pending (by title and author)
+      const existingPending = await supabaseArticles.getPendingArticles();
+      const existing = existingPending.find(p => p.title === a.title && p.authorId === a.authorId);
+      
+      if (!existing) {
+        // Create new pending article in Supabase
+        await supabaseArticles.createPendingArticle({
+          authorId: a.authorId,
+          authorName: a.authorName,
+          title: a.title,
+          content: a.content || '',
+          category: a.category,
+        });
+      }
+    } catch (error) {
+      console.error('Error submitting article to Supabase:', error);
+      // Continue with localStorage save as fallback
+    }
+  }
+  
+  // Also save to localStorage as backup
+  const pending = safeRead<any[]>(PENDING_ARTICLES_KEY, []);
+  const existingIndex = pending.findIndex(p => p.id === a.id);
   if (existingIndex >= 0) {
     // Update existing pending article
     pending[existingIndex] = payload;
@@ -249,6 +485,7 @@ export function submitArticleForApproval(cpId: string, id: string) {
     // Add new pending article
     safeWrite(PENDING_ARTICLES_KEY, [payload, ...pending]);
   }
+  
   // Trigger storage event for admin dashboard to refresh
   window.dispatchEvent(new StorageEvent('storage', { 
     key: PENDING_ARTICLES_KEY,
@@ -280,14 +517,85 @@ export function incrementArticleView(articleId: string) {
   safeWrite(ARTICLES_STORAGE_KEY, nextAll);
 }
 
-export function getCpOrders(cpId: string): Order[] {
+export async function getCpOrders(cpId: string): Promise<Order[]> {
+  // Try Supabase first if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('seller_id', cpId)
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        console.error('Error fetching orders from Supabase:', error);
+        // Fallback to localStorage
+      } else if (data) {
+        // Convert Supabase format to Order format
+        return data.map((o: any) => ({
+          id: o.id,
+          productId: o.product_id || '',
+          productName: o.product_name,
+          sellerId: o.seller_id,
+          sellerRole: o.seller_role as 'seller' | 'compostProcessor' | undefined,
+          sellerName: o.seller_name,
+          buyerId: o.buyer_id,
+          buyerName: o.buyer_name,
+          quantity: o.quantity,
+          totalIdr: Number(o.total_idr),
+          status: o.status as 'pending' | 'processing' | 'completed',
+          createdAt: o.created_at,
+        }));
+      }
+    } catch (error) {
+      console.error('Error in getCpOrders Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   return safeRead<Order[]>(`${CP_ORDERS_PREFIX}${cpId}`, []);
 }
 
 // Get all orders for a buyer by searching through all seller/processor orders
-export function getBuyerOrders(buyerId: string): Order[] {
+export async function getBuyerOrders(buyerId: string): Promise<Order[]> {
+  // Try Supabase first if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('buyer_id', buyerId)
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        console.error('Error fetching buyer orders from Supabase:', error);
+        // Fallback to localStorage
+      } else if (data) {
+        // Convert Supabase format to Order format
+        return data.map((o: any) => ({
+          id: o.id,
+          productId: o.product_id || '',
+          productName: o.product_name,
+          sellerId: o.seller_id,
+          sellerRole: o.seller_role as 'seller' | 'compostProcessor' | undefined,
+          sellerName: o.seller_name,
+          buyerId: o.buyer_id,
+          buyerName: o.buyer_name,
+          quantity: o.quantity,
+          totalIdr: Number(o.total_idr),
+          status: o.status as 'pending' | 'processing' | 'completed',
+          createdAt: o.created_at,
+        }));
+      }
+    } catch (error) {
+      console.error('Error in getBuyerOrders Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
   const allOrders: Order[] = [];
-  // Search through all localStorage keys that match the orders pattern
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -309,18 +617,91 @@ export function saveCpOrders(cpId: string, list: Order[]) {
   safeWrite(`${CP_ORDERS_PREFIX}${cpId}`, list);
 }
 
-export function createOrderForSeller(item: { productId: string; productName: string; sellerId: string; sellerName: string; buyerId: string; buyerName: string; quantity: number; totalIdr: number; }) {
+export async function createOrderForSeller(item: { productId: string; productName: string; sellerId: string; sellerName: string; buyerId: string; buyerName: string; quantity: number; totalIdr: number; }) {
   // infer sellerRole from sellerId prefix
   const sellerRole = item.sellerId && item.sellerId.startsWith('seller:') ? 'seller' : item.sellerId && item.sellerId.startsWith('compost_processor:') ? 'compostProcessor' : undefined;
-  const order: Order = { id: `ord-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, productId: item.productId, productName: item.productName, sellerId: item.sellerId, sellerRole, sellerName: item.sellerName, buyerId: item.buyerId, buyerName: item.buyerName, quantity: item.quantity, totalIdr: item.totalIdr, status: 'pending', createdAt: new Date().toISOString() };
-  const list = getCpOrders(item.sellerId);
+  
+  let orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+  
+  // Save to Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      // Check if productId is UUID (from Supabase) or timestamp-based
+      const isProductUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.productId);
+      
+      const { data, error } = await supabase
+        .from('orders')
+        .insert({
+          product_id: isProductUUID ? item.productId : null,
+          product_name: item.productName,
+          seller_id: item.sellerId,
+          seller_role: sellerRole || null,
+          seller_name: item.sellerName,
+          buyer_id: item.buyerId,
+          buyer_name: item.buyerName,
+          quantity: item.quantity,
+          total_idr: item.totalIdr,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      
+      if (error) {
+        console.error('Error creating order in Supabase:', error);
+        // Continue with localStorage save even if Supabase fails
+      } else if (data) {
+        orderId = data.id;
+      }
+    } catch (error) {
+      console.error('Error in createOrderForSeller Supabase:', error);
+      // Continue with localStorage save even if Supabase fails
+    }
+  }
+  
+  const order: Order = { 
+    id: orderId, 
+    productId: item.productId, 
+    productName: item.productName, 
+    sellerId: item.sellerId, 
+    sellerRole, 
+    sellerName: item.sellerName, 
+    buyerId: item.buyerId, 
+    buyerName: item.buyerName, 
+    quantity: item.quantity, 
+    totalIdr: item.totalIdr, 
+    status: 'pending', 
+    createdAt: new Date().toISOString() 
+  };
+  
+  const list = await getCpOrders(item.sellerId);
   const next = [order, ...list];
   saveCpOrders(item.sellerId, next);
   sendSystemMessage(item.sellerId, item.buyerId, `New order: ${order.productName} × ${order.quantity}`);
 }
 
-export function updateOrderStatus(cpId: string, orderId: string, status: Order['status']) {
-  const list = getCpOrders(cpId);
+export async function updateOrderStatus(cpId: string, orderId: string, status: Order['status']) {
+  // Update in Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+      
+      if (isUUID) {
+        const { error } = await supabase
+          .from('orders')
+          .update({ status })
+          .eq('id', orderId);
+        
+        if (error) {
+          console.error('Error updating order status in Supabase:', error);
+        }
+      }
+    } catch (error) {
+      console.error('Error in updateOrderStatus Supabase:', error);
+    }
+  }
+  
+  const list = await getCpOrders(cpId);
   let orderFound = false;
   let revenueAdded = false;
   

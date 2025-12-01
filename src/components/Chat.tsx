@@ -8,6 +8,14 @@ import { ScrollArea } from './ui/scroll-area';
 import { Send, Search } from 'lucide-react';
 import { useAuth } from '../App';
 import { getAdminAccount, getUsers } from '../utils/auth';
+import * as supabaseChat from '../services/supabaseChat';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
 
 type ChatMessage = {
   id: string;
@@ -52,46 +60,80 @@ export default function Chat() {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem(CHAT_STORAGE_KEY);
-    if (saved) {
-      try {
-        setMessages(JSON.parse(saved));
-      } catch {
-        setMessages([]);
-      }
-    }
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === CHAT_STORAGE_KEY && e.newValue) {
+    const loadMessages = async () => {
+      // Try Supabase first
+      if (isSupabaseConfigured()) {
         try {
-          setMessages(JSON.parse(e.newValue));
-        } catch {}
+          const allMessages = await supabaseChat.getAllChatMessages(currentUserId);
+          // Convert to ChatMessage format
+          const converted: ChatMessage[] = allMessages.map((m) => ({
+            id: m.id,
+            conversationId: m.conversationId,
+            fromId: m.senderId,
+            fromName: m.senderName,
+            fromRole: m.senderRole,
+            toId: m.receiverId,
+            toName: m.receiverName,
+            toRole: m.receiverRole,
+            text: m.message,
+            timestamp: m.createdAt,
+          }));
+          setMessages(converted);
+          return;
+        } catch (error) {
+          console.error('Error loading messages from Supabase:', error);
+          // Fallback to localStorage
+        }
+      }
+      
+      // Fallback to localStorage
+      const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+      if (saved) {
+        try {
+          setMessages(JSON.parse(saved));
+        } catch {
+          setMessages([]);
+        }
       }
     };
-    window.addEventListener('storage', onStorage);
+    
+    loadMessages();
+    
+    // Polling for updates (every 3 seconds)
     const interval = setInterval(() => {
-      const s = localStorage.getItem(CHAT_STORAGE_KEY);
-      if (s) {
-        try {
-          const parsed: ChatMessage[] = JSON.parse(s);
-          setMessages(parsed);
-        } catch {}
-      }
-    }, 1500);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      clearInterval(interval);
-    };
-  }, []);
+      loadMessages();
+    }, 3000);
+    
+    return () => clearInterval(interval);
+  }, [currentUserId]);
 
-  const persist = (list: ChatMessage[]) => {
+  const persist = async (list: ChatMessage[]) => {
+    // Save to Supabase if configured (new messages only)
+    // Note: We don't sync all messages to avoid duplicates
+    // Only new messages are saved to Supabase in handleSend
+    
+    // Always save to localStorage as backup
     localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(list));
   };
 
-  const allUsers = useMemo(() => {
-    const u = getUsers();
-    const admin = getAdminAccount();
-    const list = [admin, ...u];
-    return list.map(x => ({ id: `${x.role}:${x.name}`, name: x.name, role: x.role || 'admin' }));
+  const [allUsers, setAllUsers] = useState<Array<{ id: string; name: string; role: string }>>([]);
+
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const u = await getUsers();
+        const admin = getAdminAccount();
+        const list = [admin, ...(Array.isArray(u) ? u : [])];
+        const mapped = list.map(x => ({ id: `${x.role}:${x.name}`, name: x.name, role: x.role || 'admin' }));
+        setAllUsers(mapped);
+      } catch (error) {
+        console.error('Error loading users:', error);
+        // Fallback to admin only
+        const admin = getAdminAccount();
+        setAllUsers([{ id: `${admin.role}:${admin.name}`, name: admin.name, role: admin.role || 'admin' }]);
+      }
+    };
+    loadUsers();
   }, []);
 
   const conversations: ConversationItem[] = useMemo(() => {
@@ -230,11 +272,37 @@ export default function Chat() {
     setIsRoomOpen(true);
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!currentMessage.trim() || !selectedConversationId || !activeConversation) return;
     const now = new Date().toISOString();
+    
+    let messageId = `m-${Date.now()}`;
+    
+    // Try Supabase first
+    if (isSupabaseConfigured()) {
+      try {
+        const created = await supabaseChat.createChatMessage({
+          conversationId: selectedConversationId,
+          senderId: currentUserId,
+          senderName: userName || 'Anonymous',
+          senderRole: userRole || 'unknown',
+          receiverId: activeConversation.otherId,
+          receiverName: activeConversation.otherName,
+          receiverRole: activeConversation.otherRole,
+          message: currentMessage.trim(),
+        });
+        
+        if (created) {
+          messageId = created.id;
+        }
+      } catch (error) {
+        console.error('Error sending message to Supabase:', error);
+        // Continue with localStorage save
+      }
+    }
+    
     const m: ChatMessage = {
-      id: `m-${Date.now()}`,
+      id: messageId,
       conversationId: selectedConversationId,
       fromId: currentUserId,
       fromName: userName || 'Anonymous',

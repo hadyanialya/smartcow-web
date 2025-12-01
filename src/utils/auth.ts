@@ -54,10 +54,32 @@ const DEFAULT_ADMIN: UserData = {
   deletedAt: null,
 };
 
-// Get all users - currently using localStorage (will switch to Supabase after setup)
-export function getUsers(includeDeleted = false): UserData[] {
-  // TODO: After Supabase setup, this will automatically use Supabase
-  // For now, keep localStorage for backward compatibility
+// Get all users - uses Supabase if configured, otherwise localStorage
+export async function getUsers(includeDeleted = false): Promise<UserData[]> {
+  // Use Supabase if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const supabaseAuth = await import('../services/supabaseAuth');
+      return await supabaseAuth.getUsers(includeDeleted);
+    } catch (error) {
+      console.error('Error using Supabase auth:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
+  const usersJson = localStorage.getItem(STORAGE_KEY);
+  if (!usersJson) return [];
+  try {
+    const list = JSON.parse(usersJson) as UserData[];
+    return includeDeleted ? list : list.filter(u => !u.deletedAt);
+  } catch {
+    return [];
+  }
+}
+
+// Synchronous version for backward compatibility (deprecated, use async version)
+export function getUsersSync(includeDeleted = false): UserData[] {
   const usersJson = localStorage.getItem(STORAGE_KEY);
   if (!usersJson) return [];
   try {
@@ -168,7 +190,7 @@ export async function loginUser(email: string, password: string): Promise<{ succ
   }
 
   // Check regular users
-  const users = getUsers(true);
+  const users = await getUsers(true); // Make sure this is awaited
   const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
   
   if (!user) {
@@ -193,6 +215,45 @@ export async function loginUser(email: string, password: string): Promise<{ succ
 
   user.lastLogin = new Date().toISOString();
   saveUsers(users);
+  
+  // If user doesn't have a proper ID (UUID), try to sync to Supabase
+  if (isSupabaseConfigured() && (!user.id || !user.id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i))) {
+    console.log('🔄 User from localStorage has invalid ID, attempting to sync to Supabase...');
+    try {
+      const supabaseAuth = await import('../services/supabaseAuth');
+      // Check if user exists in Supabase by email
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', user.email.toLowerCase())
+        .is('deleted_at', null)
+        .maybeSingle();
+      
+      if (existingUser) {
+        // User exists in Supabase, use that ID
+        const syncedUser = {
+          ...user,
+          id: existingUser.id,
+          status: existingUser.status || 'active',
+          createdAt: existingUser.created_at,
+          lastLogin: existingUser.last_login || undefined,
+          deletedAt: existingUser.deleted_at || null,
+        };
+        console.log('✅ Found user in Supabase, using ID:', syncedUser.id);
+        return { success: true, message: 'Login berhasil!', user: syncedUser };
+      } else {
+        // User doesn't exist in Supabase, register it
+        const registerResult = await supabaseAuth.registerUser(user.name, user.email, user.password, user.role);
+        if (registerResult.success && registerResult.user) {
+          console.log('✅ User synced to Supabase, using ID:', registerResult.user.id);
+          return { success: true, message: 'Login berhasil!', user: registerResult.user };
+        }
+      }
+    } catch (syncError) {
+      console.error('❌ Error syncing user to Supabase during login:', syncError);
+    }
+  }
+  
   return { success: true, message: 'Login berhasil!', user };
 }
 
@@ -203,30 +264,87 @@ export function emailExists(email: string): boolean {
     return true;
   }
   
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   return users.some(u => u.email.toLowerCase() === email.toLowerCase());
 }
 
 export function findUserByNameRole(name: string, role: UserRole): UserData | null {
   if (role === 'admin' && DEFAULT_ADMIN.name === name) return DEFAULT_ADMIN;
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   return users.find(u => u.name === name && u.role === role) || null;
 }
 
 export function isUsernameTaken(name: string, excludeId?: string): boolean {
   if (DEFAULT_ADMIN.name.toLowerCase() === name.toLowerCase() && excludeId !== DEFAULT_ADMIN.id) return true;
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   return users.some(u => u.name.toLowerCase() === name.toLowerCase() && u.id !== excludeId);
 }
 
-export function updateUserProfileByNameRole(name: string, role: UserRole, patch: Partial<Pick<UserData, 'name' | 'email'>>) {
+export async function updateUserProfileByNameRole(name: string, role: UserRole, patch: Partial<Pick<UserData, 'name' | 'email'>>, userId?: string): Promise<{ success: boolean; message: string; user?: UserData }> {
   if (role === 'admin' && DEFAULT_ADMIN.name === name) {
     // Admin profile is immutable in this demo
     return { success: false, message: 'Admin profile cannot be modified in this demo.' };
   }
-  const users = getUsers(true);
+  
+  // Try Supabase first if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const supabaseAuth = await import('../services/supabaseAuth');
+      return await supabaseAuth.updateUserProfileByNameRole(name, role, patch, userId);
+    } catch (error) {
+      console.error('Error updating profile in Supabase:', error);
+      // Fallback to localStorage
+    }
+  }
+  
+  // Fallback to localStorage
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.name === name && u.role === role);
-  if (idx === -1) return { success: false, message: 'User not found.' };
+  if (idx === -1) {
+    // If user not found in localStorage, try to get from Supabase and sync
+    if (isSupabaseConfigured()) {
+      try {
+        const allUsers = await getUsers(true);
+        const user = allUsers.find(u => u.name === name && u.role === role);
+        if (user) {
+          // Sync user to localStorage
+          const syncedUsers = getUsersSync(true);
+          const existingIdx = syncedUsers.findIndex(u => u.id === user.id);
+          if (existingIdx >= 0) {
+            syncedUsers[existingIdx] = user;
+          } else {
+            syncedUsers.push(user);
+          }
+          localStorage.setItem('smartcow_users', JSON.stringify(syncedUsers));
+          
+          // Now update
+          const updateIdx = syncedUsers.findIndex(u => u.name === name && u.role === role);
+          if (updateIdx >= 0) {
+            const current = syncedUsers[updateIdx];
+            const next = { ...current, ...patch };
+            syncedUsers[updateIdx] = next;
+            localStorage.setItem('smartcow_users', JSON.stringify(syncedUsers));
+            
+            // Also update in Supabase
+            if (isSupabaseConfigured()) {
+              try {
+                const supabaseAuth = await import('../services/supabaseAuth');
+                await supabaseAuth.updateUserProfileByNameRole(name, role, patch, user.id);
+              } catch {}
+            }
+            
+            return { success: true, message: 'Profile updated successfully.', user: next };
+          }
+        } else {
+          // User not found in Supabase either - this means user needs to be synced
+          console.log('⚠️ User not found in Supabase, but update was attempted. User may need to logout and login again.');
+        }
+      } catch (error) {
+        console.error('Error syncing user from Supabase:', error);
+      }
+    }
+    return { success: false, message: 'User not found. Please logout and login again to sync your account.' };
+  }
   const current = users[idx];
   const next = { ...current, ...patch };
   users[idx] = next;
@@ -242,7 +360,7 @@ export function updatePasswordByNameRole(name: string, role: UserRole, oldPasswo
     // Admin password is immutable in this demo
     return { success: false, message: 'Admin password cannot be changed in this demo.' };
   }
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.name === name && u.role === role);
   if (idx === -1) return { success: false, message: 'User not found.' };
   const current = users[idx];
@@ -258,7 +376,7 @@ export function deleteAccountByNameRole(name: string, role: UserRole) {
   if (role === 'admin' && DEFAULT_ADMIN.name === name) {
     return { success: false, message: 'Admin account cannot be deleted.' };
   }
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.name === name && u.role === role);
   if (idx === -1) return { success: false, message: 'User not found.' };
   const current = users[idx];
@@ -268,7 +386,7 @@ export function deleteAccountByNameRole(name: string, role: UserRole) {
 }
 
 export function restoreAccountById(id: string) {
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
   users[idx] = { ...users[idx], deletedAt: null };
@@ -280,7 +398,7 @@ export function changeRoleById(id: string, role: UserRole) {
   if (role === 'admin') {
     return { success: false, message: 'Cannot promote to admin in this demo.' };
   }
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
   users[idx] = { ...users[idx], role };
@@ -289,7 +407,7 @@ export function changeRoleById(id: string, role: UserRole) {
 }
 
 export function setStatusById(id: string, status: UserData['status']) {
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
   users[idx] = { ...users[idx], status };
@@ -298,7 +416,7 @@ export function setStatusById(id: string, status: UserData['status']) {
 }
 
 export function resetPasswordById(id: string, tempPassword: string) {
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   const idx = users.findIndex(u => u.id === id);
   if (idx === -1) return { success: false, message: 'User not found.' };
   users[idx] = { ...users[idx], password: tempPassword };
@@ -310,7 +428,7 @@ export function createUserByAdmin(name: string, email: string, tempPassword: str
   if (role === 'admin') {
     return { success: false, message: 'Cannot create admin accounts in this demo.' };
   }
-  const users = getUsers(true);
+  const users = getUsersSync(true);
   if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
     return { success: false, message: 'Email sudah terdaftar.' };
   }
@@ -330,8 +448,9 @@ export function createUserByAdmin(name: string, email: string, tempPassword: str
   return { success: true, message: 'User created.', user: newUser };
 }
 
-export function searchUsers(keyword: string, role?: UserRole, status?: UserData['status']) {
-  const list = getUsers();
+export function searchUsers(keyword: string, role?: UserRole, status?: UserData['status'], usersList?: UserData[]) {
+  // Use provided list or fallback to sync version
+  const list = usersList || getUsersSync();
   return list.filter(u => {
     const matchesKeyword = keyword ? (u.name.toLowerCase().includes(keyword.toLowerCase()) || u.email.toLowerCase().includes(keyword.toLowerCase())) : true;
     const matchesRole = role ? u.role === role : true;

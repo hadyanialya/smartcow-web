@@ -10,6 +10,14 @@ import {
 } from 'lucide-react';
 import { useRobotMinuteChart } from '../../hooks/useRobotMinuteChart';
 import type { MinuteChartDataPoint } from '../../utils/localStorageRobot';
+import * as supabaseRobot from '../../services/supabaseRobot';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return !!(url && key && url.trim() !== '' && key.trim() !== '');
+};
 import {
   ChartContainer,
   ChartTooltip,
@@ -97,7 +105,7 @@ export default function FarmerDashboard() {
     }
 
     // Check if robot should be offline (no activity for 5 minutes)
-    const checkRobotStatus = () => {
+    const checkRobotStatus = async () => {
       try {
         const status = localStorage.getItem(ROBOT_STATUS_KEY);
         if (status) {
@@ -114,6 +122,20 @@ export default function FarmerDashboard() {
                 state: 'idle',
                 battery: Math.max(20, parsed.battery - 1), // Battery decreases slowly
               };
+              
+              // Update in Supabase if configured
+              if (isSupabaseConfigured()) {
+                try {
+                  await supabaseRobot.updateRobotStatus({
+                    online: updatedStatus.online,
+                    battery: updatedStatus.battery,
+                    state: updatedStatus.state as 'idle' | 'cleaning' | 'charging' | 'offline',
+                  });
+                } catch (error) {
+                  console.error('Error updating robot status to idle in Supabase:', error);
+                }
+              }
+              
               localStorage.setItem(ROBOT_STATUS_KEY, JSON.stringify(updatedStatus));
             }
           }
@@ -175,43 +197,75 @@ export default function FarmerDashboard() {
     };
 
     // Update robot status to online when collection happens
-    try {
-      const currentStatus = localStorage.getItem(ROBOT_STATUS_KEY);
-      const status = currentStatus ? JSON.parse(currentStatus) : { online: false, battery: 0, state: 'offline' };
-      const newBattery = Math.max(20, Math.min(100, status.battery || 100)); // Keep battery between 20-100%
-      const updatedStatus = {
-        online: true,
-        battery: newBattery,
-        state: 'collecting',
-        lastActivity: now.toISOString(),
-      };
-      localStorage.setItem(ROBOT_STATUS_KEY, JSON.stringify(updatedStatus));
-      
-      // Add robot log
-      const logs = JSON.parse(localStorage.getItem(ROBOT_LOGS_KEY) || '[]');
-      logs.unshift({
-        type: 'success',
-        message: `Collected ${collectionAmount.toFixed(2)} kg of waste`,
-        time: now.toISOString(),
-      });
-      // Keep only last 50 logs
-      if (logs.length > 50) logs.pop();
-      localStorage.setItem(ROBOT_LOGS_KEY, JSON.stringify(logs));
-      
-      // Add robot activity
-      const activities = JSON.parse(localStorage.getItem(ROBOT_ACTIVITY_KEY) || '[]');
-      activities.unshift({
-        action: 'collect',
-        status: 'completed',
-        taskName: `Waste Collection (${collectionAmount.toFixed(2)} kg)`,
-        time: now.toISOString(),
-      });
-      // Keep only last 50 activities
-      if (activities.length > 50) activities.pop();
-      localStorage.setItem(ROBOT_ACTIVITY_KEY, JSON.stringify(activities));
-    } catch (e) {
-      console.error('Error updating robot status:', e);
-    }
+    (async () => {
+      try {
+        const currentStatus = localStorage.getItem(ROBOT_STATUS_KEY);
+        const status = currentStatus ? JSON.parse(currentStatus) : { online: false, battery: 0, state: 'offline' };
+        const newBattery = Math.max(20, Math.min(100, status.battery || 100)); // Keep battery between 20-100%
+        const updatedStatus = {
+          online: true,
+          battery: newBattery,
+          state: 'cleaning' as const, // Changed from 'collecting' to 'cleaning' to match schema
+          lastActivity: now.toISOString(),
+        };
+        
+        // Save to Supabase if configured
+        if (isSupabaseConfigured()) {
+          try {
+            await supabaseRobot.updateRobotStatus({
+              online: updatedStatus.online,
+              battery: updatedStatus.battery,
+              state: updatedStatus.state,
+            });
+            
+            // Create robot activity in Supabase
+            await supabaseRobot.createRobotActivity({
+              timestamp: now.toISOString(),
+              wasteCollected: collectionAmount,
+              location: undefined,
+            });
+            
+            // Create robot log in Supabase
+            await supabaseRobot.createRobotLog({
+              timestamp: now.toISOString(),
+              message: `Collected ${collectionAmount.toFixed(2)} kg of waste`,
+              type: 'info',
+            });
+          } catch (error) {
+            console.error('Error saving robot data to Supabase:', error);
+            // Continue with localStorage save as fallback
+          }
+        }
+        
+        // Always save to localStorage as backup
+        localStorage.setItem(ROBOT_STATUS_KEY, JSON.stringify(updatedStatus));
+        
+        // Add robot log to localStorage
+        const logs = JSON.parse(localStorage.getItem(ROBOT_LOGS_KEY) || '[]');
+        logs.unshift({
+          type: 'success',
+          message: `Collected ${collectionAmount.toFixed(2)} kg of waste`,
+          time: now.toISOString(),
+        });
+        // Keep only last 50 logs
+        if (logs.length > 50) logs.pop();
+        localStorage.setItem(ROBOT_LOGS_KEY, JSON.stringify(logs));
+        
+        // Add robot activity to localStorage
+        const activities = JSON.parse(localStorage.getItem(ROBOT_ACTIVITY_KEY) || '[]');
+        activities.unshift({
+          action: 'collect',
+          status: 'completed',
+          taskName: `Waste Collection (${collectionAmount.toFixed(2)} kg)`,
+          time: now.toISOString(),
+        });
+        // Keep only last 50 activities
+        if (activities.length > 50) activities.pop();
+        localStorage.setItem(ROBOT_ACTIVITY_KEY, JSON.stringify(activities));
+      } catch (e) {
+        console.error('Error updating robot status:', e);
+      }
+    })();
 
     // Update waste data
     setWasteData(prev => {

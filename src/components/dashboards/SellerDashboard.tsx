@@ -23,10 +23,10 @@ export default function SellerDashboard() {
   const sellerName = userName || 'Anonymous';
 
   const [overview, setOverview] = useState(() => getOverview(sellerId));
-  const [products, setProducts] = useState<any[]>(() => getCpProducts(sellerId));
-  const [orders, setOrders] = useState<any[]>(() => getCpOrders(sellerId));
+  const [products, setProducts] = useState<any[]>([]);
+  const [orders, setOrders] = useState<any[]>([]);
   const [likedProductIds, setLikedProductIds] = useState<string[]>(() => getLikedProducts(sellerId));
-  const [marketplace, setMarketplace] = useState<any[]>(() => getMarketplaceProducts());
+  const [marketplace, setMarketplace] = useState<any[]>([]);
   const [showProductForm, setShowProductForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any | null>(null);
   const [productForm, setProductForm] = useState({
@@ -39,11 +39,32 @@ export default function SellerDashboard() {
     const productsKey = `smartcow_cp_products:${sellerId}`;
     const ordersKey = `smartcow_cp_orders:${sellerId}`;
   
-    const refreshData = () => {
-      setProducts(getCpProducts(sellerId));
-      setOrders(getCpOrders(sellerId));
+    const refreshData = async () => {
+      try {
+        const [productsData, ordersData, marketplaceData] = await Promise.all([
+          getCpProducts(sellerId),
+          getCpOrders(sellerId),
+          getMarketplaceProducts(),
+        ]);
+        setProducts(productsData);
+        setOrders(ordersData);
+        setMarketplace(marketplaceData);
+      } catch (error) {
+        console.error('Error refreshing data:', error);
+        // Fallback to localStorage
+        const productsKey = `smartcow_cp_products:${sellerId}`;
+        const ordersKey = `smartcow_cp_orders:${sellerId}`;
+        const marketplaceKey = 'smartcow_marketplace_products';
+        try {
+          const productsJson = localStorage.getItem(productsKey);
+          const ordersJson = localStorage.getItem(ordersKey);
+          const marketplaceJson = localStorage.getItem(marketplaceKey);
+          if (productsJson) setProducts(JSON.parse(productsJson));
+          if (ordersJson) setOrders(JSON.parse(ordersJson));
+          if (marketplaceJson) setMarketplace(JSON.parse(marketplaceJson));
+        } catch {}
+      }
       setOverview(getOverview(sellerId));
-      setMarketplace(getMarketplaceProducts());
       setLikedProductIds(getLikedProducts(sellerId));
     };
   
@@ -97,22 +118,40 @@ export default function SellerDashboard() {
     setProductForm({ name: p.name, price: formatPriceWithSeparator(p.price), unit: p.unit, category: p.category, stock: p.stock, status: p.status, description: p.description, image: p.image || '' });
     setShowProductForm(true);
   };
-  const saveProduct = () => {
+  const saveProduct = async () => {
     if (!productForm.name) return;
     // Remove dots and convert to number
     const priceNum = Number(productForm.price.toString().replace(/\./g, '')) || 0;
     if (priceNum <= 0) return;
     const payload = { ...productForm, price: priceNum };
     if (editingProduct) {
-      updateCpProduct(sellerId, editingProduct.id, payload as any);
+      await updateCpProduct(sellerId, editingProduct.id, payload as any);
     } else {
-      createCpProduct(sellerId, sellerName, payload as any);
+      await createCpProduct(sellerId, sellerName, payload as any);
     }
     // Force immediate refresh from backend - this ensures marketplace is synced
-    const updatedProducts = getCpProducts(sellerId);
-    const updatedMarketplace = getMarketplaceProducts();
-    setProducts(updatedProducts);
-    setMarketplace(updatedMarketplace);
+    const refreshAfterSave = async () => {
+      try {
+        const [updatedProducts, updatedMarketplace] = await Promise.all([
+          getCpProducts(sellerId),
+          getMarketplaceProducts(),
+        ]);
+        setProducts(updatedProducts);
+        setMarketplace(updatedMarketplace);
+      } catch (error) {
+        console.error('Error refreshing after save:', error);
+        // Fallback
+        const productsKey = `smartcow_cp_products:${sellerId}`;
+        const marketplaceKey = 'smartcow_marketplace_products';
+        try {
+          const productsJson = localStorage.getItem(productsKey);
+          const marketplaceJson = localStorage.getItem(marketplaceKey);
+          if (productsJson) setProducts(JSON.parse(productsJson));
+          if (marketplaceJson) setMarketplace(JSON.parse(marketplaceJson));
+        } catch {}
+      }
+    };
+    refreshAfterSave();
     setOverview(getOverview(sellerId));
     // Dispatch events to ensure marketplace and other components update
     try { 
@@ -127,17 +166,18 @@ export default function SellerDashboard() {
     setEditingProduct(null);
     toast.success(editingProduct ? 'Product updated successfully' : 'Product created successfully');
   };
-  const removeProduct = (p: any) => {
-    deleteCpProduct(sellerId, p.id);
-    setProducts(getCpProducts(sellerId));
+  const removeProduct = async (p: any) => {
+    await deleteCpProduct(sellerId, p.id);
+    const updatedProducts = await getCpProducts(sellerId);
+    setProducts(updatedProducts);
     setOverview(getOverview(sellerId));
   };
 
-  const completeOrder = (order: any) => {
+  const completeOrder = async (order: any) => {
     try {
-      updateOrderStatus(sellerId, order.id, 'completed');
+      await updateOrderStatus(sellerId, order.id, 'completed');
       // Force refresh all data immediately
-      const updatedOrders = getCpOrders(sellerId);
+      const updatedOrders = await getCpOrders(sellerId);
       const updatedOverview = getOverview(sellerId);
       setOrders(updatedOrders);
       setOverview(updatedOverview);
@@ -322,8 +362,7 @@ export default function SellerDashboard() {
                   </div>
                 )}
                 {likedProductIds.length > 0 && (() => {
-                  const marketplaceProducts = getMarketplaceProducts();
-                  const likedProducts = marketplaceProducts.filter(p => likedProductIds.includes(p.id));
+                  const likedProducts = marketplace.filter(p => likedProductIds.includes(p.id));
                   
                   if (likedProducts.length === 0) {
                     return (

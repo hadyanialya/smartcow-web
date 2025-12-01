@@ -56,7 +56,7 @@ export default function LoginPage() {
       }
       
       setSuccess('Login successful! Redirecting to dashboard...');
-      login(result.user.role, result.user.name);
+      login(result.user.role, result.user.name, result.user.id);
       
       setTimeout(() => {
         navigateToDashboard(result.user!.role);

@@ -151,16 +151,15 @@ CREATE TABLE IF NOT EXISTS user_settings (
   UNIQUE(user_id, role)
 );
 
--- Notifications table (REMOVED - no UI for notifications yet)
--- Uncomment if you want to add notification feature in the future
--- CREATE TABLE IF NOT EXISTS notifications (
---   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
---   user_id TEXT NOT NULL,
---   title TEXT NOT NULL,
---   message TEXT NOT NULL,
---   read BOOLEAN NOT NULL DEFAULT false,
---   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
--- );
+-- Notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  read BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_products_seller_id ON products(seller_id);
@@ -172,9 +171,8 @@ CREATE INDEX IF NOT EXISTS idx_forum_comments_discussion_id ON forum_comments(di
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_sender_id ON chat_messages(sender_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_receiver_id ON chat_messages(receiver_id);
--- Notification indexes (REMOVED)
--- CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
--- CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
 
 -- Insert default admin user
 -- Password: admin123 (you should hash this properly in production)
@@ -204,8 +202,7 @@ ALTER TABLE robot_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE robot_activities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE robot_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
--- Notifications RLS (REMOVED)
--- ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 
 -- Basic RLS policies (allow all for now - customize later)
 -- For production, you should create proper policies based on user roles
@@ -221,6 +218,5 @@ CREATE POLICY "Allow all operations for authenticated users" ON robot_status FOR
 CREATE POLICY "Allow all operations for authenticated users" ON robot_activities FOR ALL USING (true);
 CREATE POLICY "Allow all operations for authenticated users" ON robot_logs FOR ALL USING (true);
 CREATE POLICY "Allow all operations for authenticated users" ON user_settings FOR ALL USING (true);
--- Notifications policy (REMOVED)
--- CREATE POLICY "Allow all operations for authenticated users" ON notifications FOR ALL USING (true);
+CREATE POLICY "Allow all operations for authenticated users" ON notifications FOR ALL USING (true);
 

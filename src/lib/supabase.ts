@@ -7,13 +7,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('⚠️ Supabase credentials not found. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env file');
-  console.warn('⚠️ App will use localStorage as fallback');
-} else {
-  console.log('✅ Supabase credentials found:', {
-    url: supabaseUrl.substring(0, 30) + '...',
-    hasKey: !!supabaseAnonKey
-  });
+  console.warn('Supabase credentials not found. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env file');
 }
 
 // Create Supabase client
@@ -22,15 +16,6 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-  },
-  db: {
-    schema: 'public',
-  },
-  global: {
-    headers: {
-      'apikey': supabaseAnonKey,
-      'Content-Type': 'application/json',
-    },
   },
 });
 
@@ -208,8 +193,18 @@ export interface Database {
         Insert: Omit<Database['public']['Tables']['user_settings']['Row'], 'id' | 'updated_at'>;
         Update: Partial<Database['public']['Tables']['user_settings']['Insert']>;
       };
-      // Notifications table removed - no UI for notifications yet
-      // Uncomment if you want to add notification feature in the future
+      notifications: {
+        Row: {
+          id: string;
+          user_id: string;
+          title: string;
+          message: string;
+          read: boolean;
+          created_at: string;
+        };
+        Insert: Omit<Database['public']['Tables']['notifications']['Row'], 'id' | 'created_at' | 'read'>;
+        Update: Partial<Database['public']['Tables']['notifications']['Insert']>;
+      };
     };
   };
 }

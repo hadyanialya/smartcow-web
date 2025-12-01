@@ -28,10 +28,10 @@ export default function CompostProcessorDashboard() {
   const cpName = userName || 'Anonymous';
 
   const [overview, setOverview] = useState(() => getOverview(cpId));
-  const [products, setProducts] = useState<Product[]>(() => getCpProducts(cpId));
+  const [products, setProducts] = useState<Product[]>([]);
   const [articles, setArticles] = useState<Article[]>(() => getCpArticles(cpId));
-  const [orders, setOrders] = useState<Order[]>(() => getCpOrders(cpId));
-  const [marketplace, setMarketplace] = useState<Product[]>(() => getMarketplaceProducts());
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [marketplace, setMarketplace] = useState<Product[]>([]);
 
   const [showProductForm, setShowProductForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -64,12 +64,35 @@ export default function CompostProcessorDashboard() {
     const articlesKey = `smartcow_cp_education:${cpId}`;
     const ordersKey = `smartcow_cp_orders:${cpId}`;
 
-    const refreshData = () => {
-      setProducts(getCpProducts(cpId));
+    const refreshData = async () => {
+      try {
+        const [productsData, ordersData, marketplaceData] = await Promise.all([
+          getCpProducts(cpId),
+          getCpOrders(cpId),
+          getMarketplaceProducts(),
+        ]);
+        setProducts(productsData);
+        setOrders(ordersData);
+        setMarketplace(marketplaceData);
+      } catch (error) {
+        console.error('Error refreshing data:', error);
+        // Fallback to sync versions
+        const { getUsersSync } = await import('../../utils/auth');
+        // Keep using localStorage as fallback
+        const productsKey = `smartcow_cp_products:${cpId}`;
+        const ordersKey = `smartcow_cp_orders:${cpId}`;
+        const marketplaceKey = 'smartcow_marketplace_products';
+        try {
+          const productsJson = localStorage.getItem(productsKey);
+          const ordersJson = localStorage.getItem(ordersKey);
+          const marketplaceJson = localStorage.getItem(marketplaceKey);
+          if (productsJson) setProducts(JSON.parse(productsJson));
+          if (ordersJson) setOrders(JSON.parse(ordersJson));
+          if (marketplaceJson) setMarketplace(JSON.parse(marketplaceJson));
+        } catch {}
+      }
       setArticles(getCpArticles(cpId));
-      setOrders(getCpOrders(cpId));
       setOverview(getOverview(cpId));
-      setMarketplace(getMarketplaceProducts());
     };
 
     const onStorageOrUpdate = (e: StorageEvent | CustomEvent) => {
@@ -122,21 +145,39 @@ export default function CompostProcessorDashboard() {
     }
   };
   
-  const saveProduct = () => {
+  const saveProduct = async () => {
     if (!productForm.name) return;
     const priceNum = Number(productForm.price.toString().replace(/\./g, '')) || 0;
     if (priceNum <= 0) return;
     const payload = { ...productForm, price: priceNum };
     if (editingProduct) {
-      updateCpProduct(cpId, editingProduct.id, payload);
+      await updateCpProduct(cpId, editingProduct.id, payload);
     } else {
-      createCpProduct(cpId, cpName, payload);
+      await createCpProduct(cpId, cpName, payload);
     }
     // Force immediate refresh from backend - this ensures marketplace is synced
-    const updatedProducts = getCpProducts(cpId);
-    const updatedMarketplace = getMarketplaceProducts();
-    setProducts(updatedProducts);
-    setMarketplace(updatedMarketplace);
+    const refreshAfterSave = async () => {
+      try {
+        const [updatedProducts, updatedMarketplace] = await Promise.all([
+          getCpProducts(cpId),
+          getMarketplaceProducts(),
+        ]);
+        setProducts(updatedProducts);
+        setMarketplace(updatedMarketplace);
+      } catch (error) {
+        console.error('Error refreshing after save:', error);
+        // Fallback
+        const productsKey = `smartcow_cp_products:${cpId}`;
+        const marketplaceKey = 'smartcow_marketplace_products';
+        try {
+          const productsJson = localStorage.getItem(productsKey);
+          const marketplaceJson = localStorage.getItem(marketplaceKey);
+          if (productsJson) setProducts(JSON.parse(productsJson));
+          if (marketplaceJson) setMarketplace(JSON.parse(marketplaceJson));
+        } catch {}
+      }
+    };
+    refreshAfterSave();
     setOverview(getOverview(cpId));
     // Dispatch events to ensure marketplace and other components update
     try { 
@@ -151,9 +192,10 @@ export default function CompostProcessorDashboard() {
     setEditingProduct(null);
     toast.success(editingProduct ? 'Product updated successfully' : 'Product created successfully');
   };
-  const removeProduct = (p: Product) => {
-    deleteCpProduct(cpId, p.id);
-    setProducts(getCpProducts(cpId));
+  const removeProduct = async (p: Product) => {
+    await deleteCpProduct(cpId, p.id);
+    const updatedProducts = await getCpProducts(cpId);
+    setProducts(updatedProducts);
     setOverview(getOverview(cpId));
   };
 
@@ -217,23 +259,25 @@ export default function CompostProcessorDashboard() {
       setArticles(getCpArticles(cpId));
     }
     // Submit article for approval - it will appear in admin content moderation
-    submitArticleForApproval(cpId, articleId);
-    setArticles(getCpArticles(cpId)); // Refresh to update status
+    (async () => {
+      await submitArticleForApproval(cpId, articleId);
+      setArticles(getCpArticles(cpId)); // Refresh to update status
+    })();
     setShowArticleForm(false);
     setEditingArticle(null);
     setOverview(getOverview(cpId));
     toast.success(editingArticle ? 'Article updated and submitted for review' : 'Article created and submitted for review');
   };
-  const submitArticle = (a: Article) => {
-    submitArticleForApproval(cpId, a.id);
+  const submitArticle = async (a: Article) => {
+    await submitArticleForApproval(cpId, a.id);
     setArticles(getCpArticles(cpId));
   };
 
-  const completeOrder = (order: Order) => {
+  const completeOrder = async (order: Order) => {
     try {
-      updateOrderStatus(cpId, order.id, 'completed');
+      await updateOrderStatus(cpId, order.id, 'completed');
       // Force refresh all data immediately
-      const updatedOrders = getCpOrders(cpId);
+      const updatedOrders = await getCpOrders(cpId);
       const updatedOverview = getOverview(cpId);
       setOrders(updatedOrders);
       setOverview(updatedOverview);

@@ -18,9 +18,11 @@ export type UserRole = 'farmer' | 'compost_processor' | 'seller' | 'buyer' | 'ad
 interface AuthContextType {
   userRole: UserRole;
   userName: string;
+  userId?: string; // User ID from database
   isAuthenticated: boolean;
-  login: (role: UserRole, name: string) => void;
+  login: (role: UserRole, name: string, userId?: string) => void;
   logout: () => void;
+  updateUserName?: (newName: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -64,22 +66,37 @@ function App() {
     return '';
   });
   
+  const [userId, setUserId] = useState<string | undefined>(() => {
+    const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (saved) {
+      try {
+        const auth = JSON.parse(saved);
+        return auth.userId || undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  });
+  
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     const saved = localStorage.getItem(AUTH_STORAGE_KEY);
     return saved !== null;
   });
 
-  const login = (role: UserRole, name: string) => {
+  const login = (role: UserRole, name: string, userId?: string) => {
     setUserRole(role);
     setUserName(name);
+    setUserId(userId);
     setIsAuthenticated(true);
     // Save to localStorage
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ role, name }));
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ role, name, userId }));
   };
 
   const logout = () => {
     setUserRole(null);
     setUserName('');
+    setUserId(undefined);
     setIsAuthenticated(false);
     // Clear from localStorage
     localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -87,12 +104,29 @@ function App() {
     setCart([]);
   };
 
+  const updateUserName = (newName: string) => {
+    setUserName(newName);
+    // Update localStorage
+    const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (saved) {
+      try {
+        const auth = JSON.parse(saved);
+        auth.name = newName;
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   const authValue: AuthContextType = {
     userRole,
     userName,
+    userId,
     isAuthenticated,
     login,
     logout,
+    updateUserName,
   };
 
   const [cart, setCart] = useState<CartItem[]>([]);
