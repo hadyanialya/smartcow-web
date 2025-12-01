@@ -532,12 +532,13 @@ export async function resetPasswordById(userId: string, tempPassword: string): P
   }
 }
 
-// Delete account by name and role
+// Delete account by name and role (permanently)
 export async function deleteAccountByNameRole(name: string, role: UserRole): Promise<boolean> {
   try {
+    // Permanently delete from database
     const { error } = await supabase
       .from('users')
-      .update({ deleted_at: new Date().toISOString() })
+      .delete()
       .eq('name', name)
       .eq('role', role);
     

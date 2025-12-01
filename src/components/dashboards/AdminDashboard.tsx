@@ -4,7 +4,6 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { Dialog, DialogContent } from "../ui/dialog";
 import {
   Tabs,
   TabsContent,
@@ -22,7 +21,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { getUsers, createUserByAdmin, searchUsers, changeRoleById, setStatusById, resetPasswordById, deleteAccountByNameRole, restoreAccountById, UserData } from "../../utils/auth";
+import { getUsers, createUserByAdmin, searchUsers, changeRoleById, setStatusById, resetPasswordById, deleteAccountByNameRole, UserData } from "../../utils/auth";
 import { pushNotification } from "../../utils/notifications";
 import { publishApprovedArticle, rejectArticleUpdate } from "../../services/backend";
 
@@ -39,7 +38,6 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState("");
   const [filterRole, setFilterRole] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
-  const [previewArticle, setPreviewArticle] = useState<any | null>(null);
   const [creating, setCreating] = useState({ name: "", email: "", password: "", role: "farmer" });
   const [resettingPasswordFor, setResettingPasswordFor] = useState<{ userId: string; userName: string; newPassword: string } | null>(null);
   const filteredUsers = useMemo(() => {
@@ -230,15 +228,6 @@ export default function AdminDashboard() {
       refreshUsers();
     } else {
       toast.error(result.message || 'Failed to delete account');
-    }
-  };
-  const restore = async (id: string) => { 
-    const result = await restoreAccountById(id);
-    if (result.success) {
-      toast.success('Account restored');
-      refreshUsers();
-    } else {
-      toast.error(result.message || 'Failed to restore account');
     }
   };
   const changeRole = async (id: string, role: string) => { 
@@ -449,11 +438,7 @@ export default function AdminDashboard() {
                                 <Button size="sm" variant="outline" className="rounded-lg" onClick={() => reactivateUser(u.id)}>Reactivate</Button>
                               )}
                               <Button size="sm" variant="outline" className="rounded-lg" onClick={() => startResetPassword(u.id)}>Reset Password</Button>
-                              {!u.deletedAt ? (
-                                <Button size="sm" variant="outline" className="rounded-lg text-red-600 border-red-200" onClick={() => softDelete(u)}><Trash2 className="w-3 h-3 mr-1" />Delete</Button>
-                              ) : (
-                                <Button size="sm" variant="outline" className="rounded-lg" onClick={() => restore(u.id)}>Restore</Button>
-                              )}
+                              <Button size="sm" variant="outline" className="rounded-lg text-red-600 border-red-200" onClick={() => softDelete(u)}><Trash2 className="w-3 h-3 mr-1" />Delete</Button>
                             </div>
                           </div>
                           {resettingPasswordFor && resettingPasswordFor.userId === u.id && (
@@ -575,27 +560,11 @@ export default function AdminDashboard() {
                       <Button size="sm" variant="outline" className="rounded-lg text-red-600 border-red-200" onClick={() => rejectArticle(a)}>
                         Reject
                       </Button>
-                      <Button size="sm" variant="outline" className="rounded-lg" onClick={() => setPreviewArticle(a)}>
-                        View Content
-                      </Button>
                     </div>
                   </div>
                 ))}
               </div>
             </TabsContent>
-            <Dialog open={!!previewArticle} onOpenChange={() => setPreviewArticle(null)}>
-              <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
-                {previewArticle && (
-                  <div className="space-y-2">
-                    <h3 className="text-xl font-semibold text-gray-900">{previewArticle.title}</h3>
-                    <div className="text-sm text-gray-600">By {previewArticle.author} • {previewArticle.category} • {new Date(previewArticle.submittedAt).toLocaleString()}</div>
-                    <div className="prose prose-sm max-w-none text-gray-800">
-                      {previewArticle.content || 'No content provided.'}
-                    </div>
-                  </div>
-                )}
-              </DialogContent>
-            </Dialog>
 
             {/* Robot Monitoring */}
             <TabsContent

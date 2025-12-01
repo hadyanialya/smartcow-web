@@ -382,7 +382,7 @@ export async function deleteAccountByNameRole(name: string, role: UserRole): Pro
     try {
       const success = await supabaseAuth.deleteAccountByNameRole(name, role);
       if (success) {
-        return { success: true, message: 'Account deleted.' };
+        return { success: true, message: 'Account deleted permanently.' };
       } else {
         return { success: false, message: 'Failed to delete account.' };
       }
@@ -392,14 +392,13 @@ export async function deleteAccountByNameRole(name: string, role: UserRole): Pro
     }
   }
   
-  // Fallback to localStorage
+  // Fallback to localStorage - permanently delete
   const users = getUsersSync(true);
   const idx = users.findIndex(u => u.name === name && u.role === role);
   if (idx === -1) return { success: false, message: 'User not found.' };
-  const current = users[idx];
-  users[idx] = { ...current, deletedAt: new Date().toISOString() };
+  users.splice(idx, 1); // Permanently remove from array
   localStorage.setItem('smartcow_users', JSON.stringify(users));
-  return { success: true, message: 'Account deleted.' };
+  return { success: true, message: 'Account deleted permanently.' };
 }
 
 export async function restoreAccountById(id: string): Promise<{ success: boolean; message: string }> {
